@@ -1,0 +1,29 @@
+# EUR/USD Prediction Capstone - Requirements
+# Generated automatically - do not edit manually
+
+# Core dependencies
+pandas==2.1.4
+numpy==1.24.3
+scikit-learn==1.3.2
+matplotlib==3.8.2
+seaborn==0.13.0
+
+# Data collection
+yfinance==0.2.33
+
+# MLOps
+mlflow==2.9.2
+fastapi==0.104.1
+uvicorn==0.24.0
+joblib==1.3.2
+python-dotenv==1.0.0
+
+# Development
+pytest==7.4.3
+black==23.11.0
+flake8==6.1.0
+
+# Jupyter
+jupyter==1.0.0
+notebook==7.0.6
+ipykernel==6.27.1
