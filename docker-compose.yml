@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  eurusd-app:
+    build: .
+    container_name: eurusd-predictor
+    ports:
+      - "8080:8080"
+    environment:
+      # Set to 'true' to use S3, 'false' for local storage
+      - USE_S3=false
+      # S3 Configuration (only used if USE_S3=true)
+      - S3_BUCKET=eurusd-ml-models
+      - S3_MODEL_KEY=models/lstm_trained_model.keras
+      - S3_SCALER_KEY=models/lstm_scaler.joblib
+      - S3_DATA_KEY=data/processed/lstm_simple_test_data.csv
+      - AWS_REGION=us-east-1
+      # Flask configuration
+      - FLASK_ENV=production
+      - PORT=8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Uncomment below if you need to pass AWS credentials (not recommended for production)
+    # volumes:
+    #   - ~/.aws:/root/.aws:ro

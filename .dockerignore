@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Project specific
+mlruns/
+notebooks/
+tests/
+docs/
+figures/
+archive/
+flask-deployment-example/
+*.md
+!README.md
+
+# Scripts
+*.sh
+activate_project.sh
+deactivate_project.sh
+
+# Config files
+.env.local
+config/
+
+# Large files that should come from S3
+# Uncomment these if using S3 for models/data
+# models/
+# data/
