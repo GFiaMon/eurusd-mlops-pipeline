@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EUR/USD Prediction</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .prediction-box {
+            text-align: center;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+
+        .current {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .predicted {
+            font-size: 48px;
+            font-weight: bold;
+            color: #333;
+            margin: 20px 0;
+        }
+
+        .change {
+            font-size: 24px;
+            font-weight: bold;
+            padding: 10px 20px;
+            border-radius: 20px;
+            display: inline-block;
+        }
+
+        .change.up {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .change.down {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .change.neutral {
+            background-color: #e2e3e5;
+            color: #383d41;
+        }
+
+        .info {
+            background: #e8f4fc;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin: 5px 0;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .details {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+
+        .details h3 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        .api-box {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 5px;
+            margin-top: 20px;
+            font-family: monospace;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>EUR/USD Exchange Rate Predictor</h1>
+        <p class="subtitle">Predicting tomorrow's exchange rate using LSTM</p>
+
+        {% if success %}
+        <div class="status success">
+            ✅ System Ready - Model loaded successfully
+        </div>
+
+        <div class="prediction-box">
+            <div class="current">
+                Current Price: ${{ "%.4f"|format(current_price) }}
+            </div>
+
+            <div class="predicted">
+                ${{ "%.4f"|format(predicted_price) }}
+            </div>
+
+            <div class="change {{ 'up' if change_pct > 0 else 'down' if change_pct < 0 else 'neutral' }}">
+                {{ "%.2f"|format(change_pct|abs) }}%
+                {% if change_pct > 0 %}↑{% elif change_pct < 0 %}↓{% else %}→{% endif %} </div>
+
+                    <p style="color: #666; margin-top: 15px;">
+                        Predicted for {{ prediction_date }}
+                    </p>
+            </div>
+
+            <div class="info">
+                <strong>How it works:</strong> Using the last {{ seq_length }} days of historical data,
+                the LSTM model predicts tomorrow's EUR/USD exchange rate.
+            </div>
+
+            {% if stats %}
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">Data Points</div>
+                    <div class="stat-value">{{ stats.total_days }}</div>
+                </div>
+
+                <div class="stat">
+                    <div class="stat-label">Current</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.current) }}</div>
+                </div>
+
+                <div class="stat">
+                    <div class="stat-label">Minimum</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.min) }}</div>
+                </div>
+
+                <div class="stat">
+                    <div class="stat-label">Maximum</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.max) }}</div>
+                </div>
+            </div>
+
+            <div class="details">
+                <h3>Data Information</h3>
+                <p><strong>Date Range:</strong> {{ stats.date_range }}</p>
+                <p><strong>Average Price:</strong> ${{ "%.4f"|format(stats.avg) }}</p>
+                <p><strong>Last Data Point:</strong> {{ stats.last_date }}</p>
+                <p><strong>Prediction Time:</strong> {{ current_time }}</p>
+            </div>
+            {% endif %}
+
+            <div class="api-box">
+                <h3>API Endpoints</h3>
+                <p><strong>GET /api/predict</strong> - Get prediction data</p>
+                <p><strong>GET /api/stats</strong> - Get data statistics</p>
+            </div>
+
+            <button onclick="refreshPage()">🔄 Refresh Prediction</button>
+
+            {% else %}
+            <div class="status error">
+                ❌ System Error
+            </div>
+
+            <div class="details">
+                <h3>Error Details</h3>
+                <p>{{ error }}</p>
+                <p>Please check:</p>
+                <ul>
+                    <li>Model files exist in <code>models/</code> folder</li>
+                    <li>Data files exist in <code>data/</code> folder</li>
+                    <li>All requirements are installed</li>
+                </ul>
+            </div>
+            {% endif %}
+
+            <div class="footer">
+                <p>EUR/USD Prediction System | Capstone Project</p>
+                <p>Last updated: {{ current_time }}</p>
+            </div>
+        </div>
+
+        <script>
+            function refreshPage() {
+                location.reload();
+            }
+
+            // Auto-refresh every 60 seconds
+            setTimeout(() => {
+                location.reload();
+            }, 60000);
+        </script>
+</body>
+
+</html>
