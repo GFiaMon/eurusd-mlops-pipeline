@@ -39,22 +39,22 @@ venv.bak/
 *~
 
 # Data files
-data/raw/*.csv
-data/raw/*.json
-!data/raw/.gitkeep
-data/processed/
-data/models/
+# data/raw/*.csv
+# data/raw/*.json
+# !data/raw/.gitkeep
+# data/processed/
+# data/models/
 
 # Archive
 archive/
 
 
 # ML artifacts
-mlruns/
-*.pkl
-*.joblib
-*.model
-*.h5
+# # mlruns/
+# *.pkl
+# *.joblib
+# *.model
+# *.h5
 
 # Environment
 .env
@@ -65,8 +65,8 @@ mlruns/
 Thumbs.db
 
 # Logs
-*.log
-logs/
+# *.log
+# logs/
 
 # Temporary files
 tmp/

@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/guillermo/Documents/Ironhack/M8_Capstone/2-Capstone-2_MLOps/1-Development/eurusd-capstone/mlruns/631526020050012344/d42bfebb23f04fc993d789ae4c4ad71f/artifacts
+end_time: 1765900336644
+entry_point_name: ''
+experiment_id: '631526020050012344'
+lifecycle_stage: active
+run_id: d42bfebb23f04fc993d789ae4c4ad71f
+run_name: AutoARIMA_Target_Return
+run_uuid: d42bfebb23f04fc993d789ae4c4ad71f
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1765900331314
+status: 3
+tags: []
+user_id: guillermo

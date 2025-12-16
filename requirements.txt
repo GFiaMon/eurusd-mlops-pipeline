@@ -12,6 +12,10 @@ seaborn==0.13.0
 tensorflow==2.17.0
 tensorflow-metal==1.1.0
 
+# Time Series
+statsmodels==0.14.0
+pmdarima==2.0.4
+
 # Data collection
 # latest version yfinance very important!
 yfinance
