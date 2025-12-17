@@ -39,22 +39,25 @@ venv.bak/
 *~
 
 # Data files
-# data/raw/*.csv
-# data/raw/*.json
-# !data/raw/.gitkeep
-# data/processed/
-# data/models/
+data/raw/*.csv
+data/raw/*.json
+!data/raw/.gitkeep
+data/processed/
+data/models/
 
 # Archive
 archive/
+aws/uploads/
 
 
 # ML artifacts
-# # mlruns/
-# *.pkl
-# *.joblib
-# *.model
-# *.h5
+mlruns/
+*.pkl
+*.joblib
+*.model
+*.h5
+
+mlflow.db
 
 # Environment
 .env

@@ -29,6 +29,7 @@ mlruns/
 notebooks/
 tests/
 docs/
+aws/
 figures/
 archive/
 flask-deployment-example/

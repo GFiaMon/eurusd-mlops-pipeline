@@ -2,7 +2,7 @@
 # Quick activation script for EUR/USD project
 
 PROJECT_DIR="$HOME/eurusd-capstone"
-VENV_PATH="$HOME/venvs/venv_eurusd"
+VENV_PATH="~/venvs/venv_eurusd"
 
 echo "Activating EUR/USD Capstone Project..."
 echo ""

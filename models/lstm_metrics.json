@@ -1,9 +1,0 @@
-{
-  "mae": 0.01890037041991505,
-  "rmse": 0.019942175731815087,
-  "r2": -3.44073920075836,
-  "training_samples": 445,
-  "testing_samples": 134,
-  "model_architecture": "LSTM-50-50-Dense25",
-  "training_date": "2025-12-09 17:22:50"
-}

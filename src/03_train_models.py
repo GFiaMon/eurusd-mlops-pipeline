@@ -1,226 +1,245 @@
 import pandas as pd
 import numpy as np
+import os
+import warnings
+
+# Suppress annoying "pkg_resources is deprecated" warning from mlflow dependencies
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+
 import mlflow
 import mlflow.sklearn
 import mlflow.tensorflow
-import os
-import joblib
-import logging
+from mlflow.models import infer_signature
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from pmdarima import auto_arima
+import tensorflow as tf
+# Force CPU to avoid Metal issues on Mac
+try:
+    tf.config.set_visible_devices([], 'GPU')
+except:
+    pass
+
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.optimizers import Adam
-import matplotlib.pyplot as plt
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-MLFLOW_EXPERIMENT_NAME = "EURUSD_Prediction_Comparison"
-
-def load_data(processed_dir="data/processed"):
-    train = pd.read_csv(f"{processed_dir}/train.csv", index_col="Date", parse_dates=True)
-    test = pd.read_csv(f"{processed_dir}/test.csv", index_col="Date", parse_dates=True)
-    return train, test
+# Constants
+PROCESSED_DATA_DIR = os.path.join("data", "processed")
+TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "train.csv")
+TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "test.csv")
+EXPERIMENT_NAME = "EURUSD_Experiments"
 
 def eval_metrics(actual, pred):
     rmse = np.sqrt(mean_squared_error(actual, pred))
     mae = mean_absolute_error(actual, pred)
-    r2 = r2_score(actual, pred)
-    return rmse, mae, r2
+    
+    # Directional Accuracy: Fraction of times the sign of prediction matches sign of actual
+    # Note: If actual is 0, sign is 0. If pred is 0, sign is 0.
+    # We compare np.sign(actual) == np.sign(pred).
+    # Use .values (or np.array) to avoid index mismatch errors if inputs are pandas Series
+    actual_arr = np.array(actual)
+    pred_arr = np.array(pred)
+    
+    start_sign = np.sign(actual_arr)
+    pred_sign = np.sign(pred_arr)
+    accuracy = np.mean(start_sign == pred_sign)
+    
+    return rmse, mae, accuracy
 
-# -------------------------------------------------------------------
-# 1. Linear Regression
-# -------------------------------------------------------------------
-def train_linear_regression(train, test, features, target):
-    logging.info(f"Training Linear Regression for {target}...")
+def train_models():
+    # Load data
+    print("Loading data...")
+    train_df = pd.read_csv(TRAIN_DATA_PATH, index_col=0, parse_dates=True)
+    test_df = pd.read_csv(TEST_DATA_PATH, index_col=0, parse_dates=True)
     
-    X_train = train[features]
-    y_train = train[target]
-    X_test = test[features]
-    y_test = test[target]
+    feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
+    target_col = 'Target'
     
-    with mlflow.start_run(run_name=f"LinearRegression_{target}"):
-        model = LinearRegression()
-        model.fit(X_train, y_train)
+    X_train = train_df[feature_cols]
+    y_train = train_df[target_col]
+    X_test = test_df[feature_cols]
+    y_test = test_df[target_col]
+    
+    # Setup MLflow
+    # Note: connect to local MLflow (./mlruns) by default.
+    # To use a remote server, set MLFLOW_TRACKING_URI env var or call mlflow.set_tracking_uri("http://...")
+    # Connect to a local SQLite DB to enable the Model Registry
+    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    
+    # Common Tags
+    tags = {
+        "developer": "User",
+        "project": "EURUSD_Capstone",
+        "data_version": "v1"
+    }
+    
+    # --- Model A: Linear Regression ---
+    with mlflow.start_run(run_name="Linear_Regression") as run:
+        mlflow.set_tags(tags)
+        mlflow.set_tag("model_type", "LinearRegression")
         
-        predictions = model.predict(X_test)
+        print("Training Linear Regression...")
+        lr = LinearRegression()
+        lr.fit(X_train, y_train)
         
-        rmse, mae, r2 = eval_metrics(y_test, predictions)
+        predictions = lr.predict(X_test)
+        rmse, mae, da = eval_metrics(y_test, predictions)
         
-        logging.info(f"LR {target} - RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
+        print(f"  RMSE: {rmse}")
+        print(f"  MAE: {mae}")
+        print(f"  Directional Accuracy: {da}")
+        
+        # Log Params
+        mlflow.log_params(lr.get_params())
+        mlflow.log_param("features", feature_cols)
+        
+        # Log Metrics
+        mlflow.log_metric("rmse", rmse)
+        mlflow.log_metric("mae", mae)
+        mlflow.log_metric("directional_accuracy", da)
+        
+        # Infer and log signature
+        signature = infer_signature(X_train, predictions)
+        mlflow.sklearn.log_model(lr, "model", signature=signature)
+
+    # --- Model B: ARIMA ---
+    with mlflow.start_run(run_name="ARIMA") as run:
+        mlflow.set_tags(tags)
+        mlflow.set_tag("model_type", "ARIMA")
+        
+        print("Training ARIMA...")
+        # For ARIMA, we use the 'Return_Unscaled' series from the training set to forecast.
+        
+        # Fit Auto ARIMA on 'Return_Unscaled'
+        # Note regarding DA=0: If ARIMA(0,0,0) with no intercept is selected (Random Walk), it predicts 0.0 for everything.
+        # This leads to Directional Accuracy of 0.0 because actuals are never exactly 0.
+        # To fix this and improve RMSE, we use a Rolling Forecast (Walk-Forward Validation).
+        # We model R_t. At step t (in test), we have history R_0...R_{t-1}. We predict R_t.
+        # Our 'y_test' is Target_t = R_{t+1}.
+        # Wait, proper alignment:
+        # Train ends at T-1.
+        # Test starts at T.
+        # Test row 0 has 'Return_Unscaled' = R_T. And 'Target' = R_{T+1}.
+        # To predict R_{T+1}, we need history up to R_T.
+        # So for each step in Test:
+        #   1. Update model with observed Return (R_T).
+        #   2. Predict 1 step ahead -> R_{T+1}.
+        #   3. Store prediction.
+        
+        train_series = train_df['Return_Unscaled']
+        test_series = map(float, test_df['Return_Unscaled'].values) # Iterator
+        
+        # Force 'c' (constant/intercept) to avoid (0,0,0) no-intercept model which yields DA=0
+        # This ensures the model predicts at least the mean return (Drift) rather than pure 0.
+        arima_model = auto_arima(train_series, seasonal=False, trend='c', trace=True, error_action='ignore', suppress_warnings=True)
+        print(f"  Best Order: {arima_model.order}")
+        
+        predictions = []
+        # Rolling Forecast
+        print("  Running Rolling Forecast for ARIMA...")
+        
+        # We need to predict ONE step ahead of the training set first?
+        # NO. test_df row 0 target is R_{T+1}.
+        # We have R_T available in test_df['Return_Unscaled'] row 0.
+        # So we should update with that first?
+        # Let's check:
+        # y_test[0] is Target at index T -> R_{T+1}.
+        # We want to predict R_{T+1}.
+        # We verify we have R_T.
+        # Yes, test_df.iloc[0]['Return_Unscaled'] is R_T.
+        
+        for obs in test_series:
+            # Update with the new observation (Realizes R_t)
+            arima_model.update(obs)
+            # Predict 1 step ahead (Forecast R_{t+1})
+            pred = arima_model.predict(n_periods=1)[0]
+            predictions.append(pred)
+            
+        predictions = np.array(predictions)
+        
+        rmse, mae, da = eval_metrics(y_test, predictions)
+        
+        print(f"  RMSE: {rmse}")
+        print(f"  MAE: {mae}")
+        print(f"  Directional Accuracy: {da}")
+        
+        mlflow.log_param("order", str(arima_model.order))
+        mlflow.log_param("seasonal_order", str(arima_model.seasonal_order))
+        mlflow.log_param("aic", arima_model.aic())
         
         mlflow.log_metric("rmse", rmse)
         mlflow.log_metric("mae", mae)
-        mlflow.log_metric("r2", r2)
-        mlflow.sklearn.log_model(model, f"model_lr_{target}")
-        
-        # Save locally for easy access
-        os.makedirs("models/linear_regression", exist_ok=True)
-        joblib.dump(model, f"models/linear_regression/model_{target}.pkl")
-        
-        return rmse
+        mlflow.log_metric("directional_accuracy", da)
+        # Verify if signature is needed/possible for ARIMA. Usually not critical for basic stats models unless serving.
+        mlflow.sklearn.log_model(arima_model, "model")
 
-# -------------------------------------------------------------------
-# 2. Auto ARIMA (Univariate)
-# -------------------------------------------------------------------
-def train_auto_arima(train, test, target):
-    logging.info(f"Training Auto ARIMA for {target}...")
-    
-    # ARIMA is univariate, uses only the target history
-    y_train = train[target]
-    y_test = test[target]
-    
-    with mlflow.start_run(run_name=f"AutoARIMA_{target}"):
-        # Stepwise search to minimize AIC
-        # We assume data is stationary or auto_arima handles differencing (d)
-        model = auto_arima(y_train, start_p=1, start_q=1,
-                           max_p=5, max_q=5, m=1, # Non-seasonal for daily data often better
-                           start_P=0, seasonal=False, 
-                           d=None, trace=False,
-                           error_action='ignore',  
-                           suppress_warnings=True, 
-                           stepwise=True)
+    # --- Model C: LSTM ---
+    with mlflow.start_run(run_name="LSTM") as run:
+        mlflow.set_tags(tags)
+        mlflow.set_tag("model_type", "LSTM")
         
-        logging.info(f"Best ARIMA order: {model.order}")
+        print("Training LSTM...")
+        # Input Shape: [Samples, Time Steps, Features]
+        # We treat each row as 1 Time Step with N features.
+        time_steps = 1
+        n_features = X_train.shape[1]
         
-        # Forecast
-        predictions, conf_int = model.predict(n_periods=len(y_test), return_conf_int=True)
-        # Predictions is a pd.Series or array matching test length
+        X_train_reshaped = X_train.values.reshape((X_train.shape[0], time_steps, n_features))
+        X_test_reshaped = X_test.values.reshape((X_test.shape[0], time_steps, n_features))
         
-        rmse, mae, r2 = eval_metrics(y_test, predictions)
+        epochs = 20
+        batch_size = 32
         
-        logging.info(f"ARIMA {target} - RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
-        
-        mlflow.log_params({"order": str(model.order)})
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("mae", mae)
-        mlflow.log_metric("r2", r2)
-        
-        # Save locally
-        os.makedirs("models/arima", exist_ok=True)
-        joblib.dump(model, f"models/arima/model_{target}.pkl")
-        
-        return rmse
-
-# -------------------------------------------------------------------
-# 3. LSTM
-# -------------------------------------------------------------------
-def create_sequences(X, y, time_steps=1):
-    Xs, ys = [], []
-    for i in range(len(X) - time_steps):
-        v = X.iloc[i:(i + time_steps)].values
-        Xs.append(v)
-        ys.append(y.iloc[i + time_steps])
-    return np.array(Xs), np.array(ys)
-
-def train_lstm(train, test, features, target):
-    logging.info(f"Training LSTM for {target}...")
-    
-    time_steps = 10 # Lookback window
-    
-    # Scale data? LSTM is sensitive to scale. 
-    # For simplicity, we assume Return is small (-0.01 to 0.01), Price is ~1.0-1.2.
-    # Ideally we use scalers, but for this "simple" pass we might skip if variables are similar ranges.
-    # However, Returns and Price are very different scales. 
-    # We will fit separate LSTMs, so scaling is per-model. 
-    # Let's Skip explicit scaling for Returns (already small), but Price might need it? 
-    # Actually, Price variation is small too (1.0 to 1.2), so usually okay without standard scaling for a basic demo.
-    
-    X_train = train[features]
-    y_train = train[target]
-    X_test = test[features]
-    y_test = test[target]
-    
-    # Create sequences
-    X_train_seq, y_train_seq = create_sequences(X_train, y_train, time_steps)
-    X_test_seq, y_test_seq = create_sequences(X_test, y_test, time_steps)
-    
-    if len(X_train_seq) == 0 or len(X_test_seq) == 0:
-        logging.warning("Not enough data for LSTM sequences.")
-        return 999
-        
-    with mlflow.start_run(run_name=f"LSTM_{target}"):
         model = Sequential()
-        model.add(LSTM(50, activation='relu', input_shape=(time_steps, len(features))))
+        model.add(LSTM(50, activation='relu', input_shape=(time_steps, n_features)))
         model.add(Dense(1))
+        
         model.compile(optimizer='adam', loss='mse')
         
         # Train
-        model.fit(X_train_seq, y_train_seq, epochs=20, batch_size=32, verbose=0)
+        model.fit(X_train_reshaped, y_train, epochs=epochs, batch_size=batch_size, verbose=0)
         
-        predictions = model.predict(X_test_seq)
+        predictions = model.predict(X_test_reshaped)
+        predictions = predictions.flatten()
         
-        # y_test_seq corresponds to y_test[time_steps:]
-        real_y = y_test_seq
+        rmse, mae, da = eval_metrics(y_test, predictions)
         
-        rmse, mae, r2 = eval_metrics(real_y, predictions.flatten())
+        print(f"  RMSE: {rmse}")
+        print(f"  MAE: {mae}")
+        print(f"  Directional Accuracy: {da}")
         
-        logging.info(f"LSTM {target} - RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
+        # Log Architecture Details Modularly
+        mlflow.log_param("input_shape", f"[{X_train.shape[0]}, {time_steps}, {n_features}]")
+        mlflow.log_param("time_steps", time_steps)
+        mlflow.log_param("n_features", n_features)
+        mlflow.log_param("epochs", epochs)
+        mlflow.log_param("batch_size", batch_size)
+        
+        # Log Layer Details
+        model_summary = []
+        for i, layer in enumerate(model.layers):
+            layer_config = layer.get_config()
+            layer_name = layer_config['name']
+            layer_class = layer.__class__.__name__
+            units = layer_config.get('units', 'N/A')
+            activation = layer_config.get('activation', 'N/A')
+            
+            mlflow.log_param(f"layer_{i}_class", layer_class)
+            mlflow.log_param(f"layer_{i}_units", units)
+            mlflow.log_param(f"layer_{i}_activation", activation)
+            
+            model_summary.append(f"{layer_class}(units={units}, activation={activation})")
+            
+        mlflow.log_param("model_arch_summary", " -> ".join(model_summary))
         
         mlflow.log_metric("rmse", rmse)
         mlflow.log_metric("mae", mae)
-        mlflow.log_metric("r2", r2)
-        
-        # Save locally - Keras format
-        os.makedirs("models/lstm", exist_ok=True)
-        model.save(f"models/lstm/model_{target}.keras")
-        
-        return rmse
+        mlflow.log_metric("directional_accuracy", da)
 
-def main():
-    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
-    
-    train, test = load_data()
-    
-    # Define features and targets
-    # Features created in step 02: Close_Lag_1..5, Return_Lag_1..5, SMA_7, SMA_30
-    feature_cols = [c for c in train.columns if 'Lag' in c or 'SMA' in c]
-    
-    logging.info(f"Features: {feature_cols}")
-    
-    targets = ['Target_Return', 'Target_Close']
-    
-    results = {}
-    
-    for target in targets:
-        logging.info(f"--- Processing Target: {target} ---")
-        
-        # Linear Regression
-        rmse_lr = train_linear_regression(train, test, feature_cols, target)
-        
-        # ARIMA (Only makes sense for Price/Close usually, or Return series itself)
-        # Note: Auto ARIMA takes the univariate series. 
-        # If target is 'Target_Return', we just fit on 'Return' history? 
-        # Actually we fit on 'Target_Return' variable of train set? 
-        # No, ARIMA models the series itself. The Target_Return column IS the Return series shifted.
-        # So we should use the UNshifted 'Return' or 'Close' to train, and predict forward?
-        # Simpler: Use the 'Target' column as the series we want to model, knowing it aligns with features.
-        # Strict time series definition: y_t. 
-        rmse_arima = train_auto_arima(train, test, target)
-        
-        # LSTM
-        rmse_lstm = train_lstm(train, test, feature_cols, target)
-        
-        results[target] = {
-            "LinearRegression": rmse_lr,
-            "ARIMA": rmse_arima,
-            "LSTM": rmse_lstm
-        }
-
-    logging.info("--- Experiment Results (RMSE) ---")
-    print(results)
-    
-    # Simple logic to identify best model
-    best_models = {}
-    for target, scores in results.items():
-        best_model_name = min(scores, key=scores.get)
-        best_models[target] = best_model_name
-        logging.info(f"Best model for {target}: {best_model_name} (RMSE: {scores[best_model_name]:.4f})")
-
-    # TODO: In a real system, we'd package the best model here.
-    # For now, models are saved in models/
+        # Infer and log signature (This resolves the TF warning)
+        signature = infer_signature(X_train_reshaped, predictions)
+        mlflow.tensorflow.log_model(model, "model", signature=signature)
 
 if __name__ == "__main__":
-    main()
+    train_models()
