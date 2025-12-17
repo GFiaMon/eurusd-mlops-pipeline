@@ -64,6 +64,9 @@ mlflow.db
 .env
 .env.local
 
+# AWS credentials
+*.pem
+
 # OS
 .DS_Store
 Thumbs.db
@@ -75,3 +78,4 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+
