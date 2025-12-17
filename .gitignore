@@ -49,6 +49,7 @@ data/models/
 archive/
 aws/uploads/
 
+notebooks/
 
 # ML artifacts
 mlruns/

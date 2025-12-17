@@ -4,6 +4,9 @@ import mlflow
 import os
 import json
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Suppress annoying "pkg_resources is deprecated" warning from mlflow dependencies
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
@@ -45,7 +48,13 @@ def evaluate_and_select():
     print(f"Naive Baseline Dir. Acc: {naive_da}")
 
     # 2. Setup MLflow Client
-    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        print(f"Using Remote MLflow Tracking URI: {tracking_uri}")
+        mlflow.set_tracking_uri(tracking_uri)
+    else:
+        print("Using Local MLflow (sqlite:///mlflow.db)")
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
     client = mlflow.tracking.MlflowClient()
     
     experiment = client.get_experiment_by_name(EXPERIMENT_NAME)

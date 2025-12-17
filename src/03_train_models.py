@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import os
 import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Suppress annoying "pkg_resources is deprecated" warning from mlflow dependencies
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
@@ -64,7 +67,15 @@ def train_models():
     # Note: connect to local MLflow (./mlruns) by default.
     # To use a remote server, set MLFLOW_TRACKING_URI env var or call mlflow.set_tracking_uri("http://...")
     # Connect to a local SQLite DB to enable the Model Registry
-    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+# Check if running on AWS (simple check)
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        print(f"Using Remote MLflow Tracking URI: {tracking_uri}")
+        mlflow.set_tracking_uri(tracking_uri)
+    else:
+        print("Using Local MLflow (sqlite:///mlflow.db)")
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    
     mlflow.set_experiment(EXPERIMENT_NAME)
     
     # Common Tags
