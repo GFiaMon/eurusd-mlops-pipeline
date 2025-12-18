@@ -177,11 +177,11 @@
 <body>
     <div class="container">
         <h1>EUR/USD Exchange Rate Predictor</h1>
-        <p class="subtitle">Predicting tomorrow's exchange rate using LSTM</p>
+        <p class="subtitle">Next-day prediction powered by Machine Learning</p>
 
         {% if success %}
         <div class="status success">
-            ✅ System Ready - Model loaded successfully
+            ✅ System Ready - <strong>{{ model_type }}</strong> model loaded
         </div>
 
         <div class="prediction-box">
@@ -195,74 +195,78 @@
 
             <div class="change {{ 'up' if change_pct > 0 else 'down' if change_pct < 0 else 'neutral' }}">
                 {{ "%.2f"|format(change_pct|abs) }}%
-                {% if change_pct > 0 %}↑{% elif change_pct < 0 %}↓{% else %}→{% endif %} </div>
-
-                    <p style="color: #666; margin-top: 15px;">
-                        Predicted for {{ prediction_date }}
-                    </p>
+                {% if change_pct > 0 %}↑ (UP){% elif change_pct < 0 %}↓ (DOWN){% else %}→ (SIDEWAYS){% endif %}
             </div>
 
-            <div class="info">
-                <strong>How it works:</strong> Using the last {{ seq_length }} days of historical data,
-                the LSTM model predicts tomorrow's EUR/USD exchange rate.
+            <p style="color: #666; margin-top: 15px;">
+                Predicted for <strong>{{ prediction_date }}</strong>
+            </p>
+        </div>
+
+        <div class="info">
+            <strong>Model Type:</strong> {{ model_type }}<br>
+            <strong>Method:</strong> Predicting tomorrow's return {{ model_method }}.
+        </div>
+
+        {% if stats %}
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">History Window</div>
+                <div class="stat-value">{{ stats.total_days }} days</div>
             </div>
 
-            {% if stats %}
-            <div class="stats">
-                <div class="stat">
-                    <div class="stat-label">Data Points</div>
-                    <div class="stat-value">{{ stats.total_days }}</div>
-                </div>
-
-                <div class="stat">
-                    <div class="stat-label">Current</div>
-                    <div class="stat-value">${{ "%.4f"|format(stats.current) }}</div>
-                </div>
-
-                <div class="stat">
-                    <div class="stat-label">Minimum</div>
-                    <div class="stat-value">${{ "%.4f"|format(stats.min) }}</div>
-                </div>
-
-                <div class="stat">
-                    <div class="stat-label">Maximum</div>
-                    <div class="stat-value">${{ "%.4f"|format(stats.max) }}</div>
-                </div>
+            <div class="stat">
+                <div class="stat-label">Last Price</div>
+                <div class="stat-value">${{ "%.4f"|format(stats.current) }}</div>
             </div>
 
-            <div class="details">
-                <h3>Data Information</h3>
-                <p><strong>Date Range:</strong> {{ stats.date_range }}</p>
-                <p><strong>Average Price:</strong> ${{ "%.4f"|format(stats.avg) }}</p>
-                <p><strong>Last Data Point:</strong> {{ stats.last_date }}</p>
-                <p><strong>Prediction Time:</strong> {{ current_time }}</p>
-            </div>
-            {% endif %}
-
-            <div class="api-box">
-                <h3>API Endpoints</h3>
-                <p><strong>GET /api/predict</strong> - Get prediction data</p>
-                <p><strong>GET /api/stats</strong> - Get data statistics</p>
+            <div class="stat">
+                <div class="stat-label">Range Min</div>
+                <div class="stat-value">${{ "%.4f"|format(stats.min) }}</div>
             </div>
 
-            <button onclick="refreshPage()">🔄 Refresh Prediction</button>
-
-            {% else %}
-            <div class="status error">
-                ❌ System Error
+            <div class="stat">
+                <div class="stat-label">Range Max</div>
+                <div class="stat-value">${{ "%.4f"|format(stats.max) }}</div>
             </div>
+        </div>
 
-            <div class="details">
-                <h3>Error Details</h3>
-                <p>{{ error }}</p>
-                <p>Please check:</p>
-                <ul>
-                    <li>Model files exist in <code>models/</code> folder</li>
-                    <li>Data files exist in <code>data/</code> folder</li>
-                    <li>All requirements are installed</li>
-                </ul>
-            </div>
-            {% endif %}
+        <div class="details">
+            <h3>Deployment Details</h3>
+            <p><strong>Actual Data Range:</strong> {{ stats.date_range }}</p>
+            <p><strong>Last Data Update:</strong> {{ stats.last_date }}</p>
+            <p><strong>Model Status:</strong> Champion Serving</p>
+            <p><strong>Server Time:</strong> {{ current_time }}</p>
+        </div>
+        {% endif %}
+
+        <div class="api-box">
+            <h3>API Access</h3>
+            <p><code>GET /api/predict</code> - JSON prediction object</p>
+            <p><code>GET /health</code> - Service health status</p>
+        </div>
+
+        <div style="text-align: center; margin-top: 20px;">
+            <button onclick="refreshPage()">🔄 Refresh Analysis</button>
+        </div>
+
+        {% else %}
+        <div class="status error">
+            ❌ System Error
+        </div>
+
+        <div class="details">
+            <h3>Error Details</h3>
+            <p>{{ error }}</p>
+            <p>Possible causes:</p>
+            <ul>
+                <li>MLflow Tracking Server is unreachable</li>
+                <li>Model alias 'champion' is not set in Registry</li>
+                <li>AWS S3 credentials or bucket access issues</li>
+            </ul>
+            <button onclick="refreshPage()">Attempt Reconnect</button>
+        </div>
+        {% endif %}
 
             <div class="footer">
                 <p>EUR/USD Prediction System | Capstone Project</p>

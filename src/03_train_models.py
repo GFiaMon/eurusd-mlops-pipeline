@@ -17,14 +17,14 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from pmdarima import auto_arima
 import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Input
+
 # Force CPU to avoid Metal issues on Mac
 try:
     tf.config.set_visible_devices([], 'GPU')
 except:
     pass
-
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
 
 # Constants
 PROCESSED_DATA_DIR = os.path.join("data", "processed")
@@ -124,7 +124,7 @@ def train_models():
         
         # Infer and log signature
         signature = infer_signature(X_train, predictions)
-        mlflow.sklearn.log_model(lr, "model", signature=signature)
+        mlflow.sklearn.log_model(lr, artifact_path="model", signature=signature)
 
     # --- Model B: ARIMA ---
     with mlflow.start_run(run_name="ARIMA") as run:
@@ -195,7 +195,15 @@ def train_models():
         mlflow.log_metric("mae", mae)
         mlflow.log_metric("directional_accuracy", da)
         # Verify if signature is needed/possible for ARIMA. Usually not critical for basic stats models unless serving.
-        mlflow.sklearn.log_model(arima_model, "model")
+        # Log Feature Config
+        feature_config = {
+            "features": ['Return_Unscaled'],
+            "target": target_col,
+            "model_type": "ARIMA"
+        }
+        mlflow.log_dict(feature_config, "feature_config.json")
+
+        mlflow.sklearn.log_model(arima_model, artifact_path="model")
 
     # --- Model C: LSTM ---
     with mlflow.start_run(run_name="LSTM") as run:
@@ -215,7 +223,8 @@ def train_models():
         batch_size = 32
         
         model = Sequential()
-        model.add(LSTM(50, activation='relu', input_shape=(time_steps, n_features)))
+        model.add(Input(shape=(time_steps, n_features)))
+        model.add(LSTM(50, activation='relu'))
         model.add(Dense(1))
         
         model.compile(optimizer='adam', loss='mse')
@@ -256,6 +265,8 @@ def train_models():
             
         mlflow.log_param("model_arch_summary", " -> ".join(model_summary))
         
+        mlflow.log_metric("rmse", rmse)
+        mlflow.log_metric("mae", mae)
         mlflow.log_metric("directional_accuracy", da)
         
         # Log Scaler as Artifact
@@ -266,13 +277,14 @@ def train_models():
             "features": feature_cols,
             "target": target_col,
             "time_steps": time_steps,
-            "n_features": n_features
+            "n_features": n_features,
+            "model_type": "LSTM"
         }
         mlflow.log_dict(feature_config, "feature_config.json")
 
         # Infer and log signature (This resolves the TF warning)
         signature = infer_signature(X_train_reshaped, predictions)
-        mlflow.tensorflow.log_model(model, "model", signature=signature)
+        mlflow.tensorflow.log_model(model, artifact_path="model", signature=signature)
 
 if __name__ == "__main__":
     train_models()

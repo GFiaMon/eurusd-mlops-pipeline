@@ -162,6 +162,7 @@ class FeatureEngineer:
         self.config = config
         self.scaler = scaler
         self.feature_cols = config.get('features', [])
+        self.model_type = config.get('model_type', 'Unknown')
         # Default fallback
         if not self.feature_cols:
              self.feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
@@ -189,7 +190,9 @@ class FeatureEngineer:
         # We assume standard naming convention: MA_X, Lag_X
         # But for now, let's just compute the standard set and select what's needed.
         # In a robust system, we would parse the feature names.
-        
+
+        # Calculate features dynamically based on what's in self.feature_cols
+        # For simplicity, we assume the standard set is available
         # MA
         data['MA_5'] = data['Close'].rolling(window=5).mean()
         
@@ -200,29 +203,38 @@ class FeatureEngineer:
         # Drop NaNs
         data = data.dropna()
         
+        # Create unscaled return for specific model types (like ARIMA)
+        data['Return_Unscaled'] = data['Return']
+        
         if len(data) == 0:
             return None, None
             
         # Select features
-        # If config specifies 'Return_Unscaled', handle that (ARIMA case)
-        # But let's assume standard features for now.
-        
+        # Filter feature_cols to only those present in data
+        available_features = [c for c in self.feature_cols if c in data.columns]
+        if not available_features:
+            # Fallback if config features not found
+            available_features = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
+            
         # Get the LAST row for prediction
-        last_row = data.iloc[[-1]][self.feature_cols]
+        last_row = data.iloc[[-1]][available_features]
         current_price = data.iloc[-1]['Close']
         
         # Scale
         if self.scaler:
-             X = self.scaler.transform(last_row)
+             try:
+                 X = self.scaler.transform(last_row)
+             except Exception as e:
+                 print(f"Scaling failed: {e}. Using raw values.")
+                 X = last_row.values
         else:
              X = last_row.values
              
-        # Reshape if LSTM
-        # We need to know if it's LSTM. Code/Config should tell us.
-        # Or we check config 'n_features' / 'time_steps'
-        if 'time_steps' in self.config:
-            time_steps = self.config['time_steps']
-            # n_features = self.config['n_features'] # verified from X.shape[1]
+        # Reshape based on model type
+        # LSTM expects (samples, time_steps, features)
+        # Linear Regression and others usually expect (samples, features)
+        if 'lstm' in self.model_type.lower():
+            time_steps = self.config.get('time_steps', 1)
             X = X.reshape((1, time_steps, X.shape[1]))
             
         return X, current_price
@@ -298,43 +310,63 @@ def home():
          return render_template('index.html', success=False, error="Data not loaded")
 
     # Predict
-    X, current_price = fe.preprocess(df_data)
-    if X is None:
-         return render_template('index.html', success=False, error="Not enough data")
-         
-    # Prediction
-    # Model returns:
-    # LR: [prediction] (scaled return?) No, in training we trained on Target (Future Return)
-    # Wait, in training:
-    # X = Scaled Features
-    # y = Raw Target (Return shifted) => Wait, did we scale y?
-    # In src/02: "MinMaxScaler on Train data only; transform both Train and Test."
-    # AND: "scaler.fit_transform(train_df[feature_cols])" -> Only features are scaled.
-    # So Y (Target) is NOT scaled. It is raw percentage return.
-    
-    # So model.predict(X) returns Predicted Return (fraction, e.g. 0.001 for 0.1%)
-    
-    pred_return = model.predict(X)
-    # Handle varying output shapes
-    if isinstance(pred_return, pd.DataFrame):
-        pred_return = pred_return.values
-    if len(pred_return.shape) > 1:
-        pred_return = pred_return.flatten()[0]
-    else:
-        pred_return = pred_return[0]
+    try:
+        X, current_price = fe.preprocess(df_data)
+        if X is None:
+             return render_template('index.html', success=False, error="Not enough data to generate features")
+             
+        # Prediction
+        pred_return = model.predict(X)
         
-    predicted_price = current_price * (1 + pred_return)
-    change_pct = pred_return * 100
-    
-    context = {
-        'success': True,
-        'predicted_price': round(predicted_price, 4),
-        'current_price': round(current_price, 4),
-        'change_pct': round(change_pct, 4),
-        'model_info': feature_config,
-        'prediction_date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    }
-    return render_template('index.html', **context)
+        # Handle varying output shapes (numpy, pandas, etc.)
+        if hasattr(pred_return, 'values'):
+            pred_return = pred_return.values
+        if isinstance(pred_return, (list, np.ndarray)) and len(np.shape(pred_return)) > 0:
+            pred_return = pred_return.flatten()[0]
+        else:
+            pred_return = float(pred_return)
+            
+        predicted_price = current_price * (1 + pred_return)
+        change_pct = pred_return * 100
+        
+        # Model description for UI
+        model_type = feature_config.get('model_type', 'Unknown')
+        if 'lstm' in model_type.lower():
+            model_desc = "LSTM (Deep Learning)"
+            method = f"using the last {feature_config.get('time_steps', 1)} days and {len(feature_config.get('features', []))} features"
+        elif 'arima' in model_type.lower():
+            model_desc = "ARIMA (Statistical)"
+            method = "using historical return patterns"
+        else:
+            model_desc = "Linear Regression"
+            method = f"using {len(feature_config.get('features', []))} technical indicators"
+
+        stats = {
+            'total_days': len(df_data),
+            'current': current_price,
+            'min': df_data['Close'].min(),
+            'max': df_data['Close'].max(),
+            'avg': df_data['Close'].mean(),
+            'last_date': df_data.index[-1].strftime('%Y-%m-%d'),
+            'date_range': f"{df_data.index[0].strftime('%Y-%m-%d')} to {df_data.index[-1].strftime('%Y-%m-%d')}"
+        }
+
+        context = {
+            'success': True,
+            'predicted_price': round(predicted_price, 4),
+            'current_price': round(current_price, 4),
+            'change_pct': round(change_pct, 4),
+            'model_type': model_desc,
+            'model_method': method,
+            'stats': stats,
+            'prediction_date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
+            'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        return render_template('index.html', **context)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return render_template('index.html', success=False, error=f"Prediction error: {str(e)}")
 
 @app.route('/api/predict', methods=['GET', 'POST'])
 def api_predict():

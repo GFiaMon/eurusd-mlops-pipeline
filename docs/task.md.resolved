@@ -1,0 +1,8 @@
+# Task Breakdown
+
+- [x] Refine MLflow API to serve dynamic models from remote server
+- [x] Create comprehensive documentation (FAQ, Walkthrough, Deployment Checklist)
+- [x] Implement a clean-up script for MLflow Model Registry
+- [x] Update deployment script and instructions for direct SCP upload and root directory usage
+- [x] Standardize container names and fix path issues in documentation
+- [ ] Final project review and handover
