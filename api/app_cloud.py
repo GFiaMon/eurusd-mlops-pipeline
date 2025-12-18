@@ -1,22 +1,23 @@
-# api/app_cloud.py - Enhanced version with S3 support
+# api/app_cloud.py - Enhanced version with S3/MLflow support
 import os
 import sys
+import json
 import numpy as np
 import pandas as pd
 import joblib
+import mlflow
+import mlflow.sklearn
+import mlflow.tensorflow
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(project_root)
-
-# Try to import TensorFlow
-try:
-    from tensorflow.keras.models import load_model
-    TF_AVAILABLE = True
-except ImportError:
-    TF_AVAILABLE = False
 
 # Try to import boto3 for S3 support
 try:
@@ -32,265 +33,348 @@ app = Flask(__name__, template_folder='frontend')
 # Global variables
 model = None
 scaler = None
-SEQ_LENGTH = 100
+feature_config = None
 df_data = None
+load_success = False
 
 # Configuration
 USE_S3 = os.getenv('USE_S3', 'false').lower() == 'true'
 S3_BUCKET = os.getenv('S3_BUCKET', 'your-bucket-name')
-S3_MODEL_KEY = os.getenv('S3_MODEL_KEY', 'models/lstm_trained_model.keras')
-S3_SCALER_KEY = os.getenv('S3_SCALER_KEY', 'models/lstm_scaler.joblib')
-S3_DATA_KEY = os.getenv('S3_DATA_KEY', 'data/processed/lstm_simple_test_data.csv')
+S3_MODEL_INFO_KEY = os.getenv('S3_MODEL_INFO_KEY', 'models/best_model_info.json') # Key to JSON
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
 
-def download_from_s3(bucket, key, local_path):
-    """Download file from S3 to local path"""
+def download_s3_json(bucket, key):
+    """Download and parse JSON from S3"""
     if not S3_AVAILABLE:
-        print("boto3 not available for S3 operations")
-        return False
+        print("boto3 not available")
+        return None
     
     try:
-        s3_client = boto3.client('s3', region_name=AWS_REGION)
-        
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        
-        print(f"Downloading s3://{bucket}/{key} to {local_path}")
-        s3_client.download_file(bucket, key, local_path)
-        print(f"Successfully downloaded {key}")
-        return True
-    except ClientError as e:
-        print(f"Error downloading from S3: {e}")
-        return False
+        s3 = boto3.client('s3', region_name=AWS_REGION)
+        print(f"Fetching {key} from {bucket}...")
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        data = json.loads(obj['Body'].read().decode('utf-8'))
+        return data
     except Exception as e:
-        print(f"Unexpected error downloading from S3: {e}")
+        print(f"Error fetching JSON from S3: {e}")
+        return None
+
+def load_from_mlflow():
+    """Load model, scaler, and config from MLflow"""
+    global model, scaler, feature_config
+    
+    # 1. Get Model Info
+    model_info = None
+    if USE_S3:
+        model_info = download_s3_json(S3_BUCKET, S3_MODEL_INFO_KEY)
+    
+    if not model_info:
+        print("Could not retrieve model info from S3. Checking local fallback...")
+        local_info_path = os.path.join(project_root, 'models', 'best_model_info.json')
+        if os.path.exists(local_info_path):
+             with open(local_info_path, 'r') as f:
+                 model_info = json.load(f)
+        else:
+            print("No local model info found.")
+            return False
+
+    print(f"Model Info: {model_info}")
+    model_uri = model_info.get('model_uri')
+    
+    if not model_uri:
+        print("Invalid model info: missing model_uri")
+        return False
+        
+    try:
+        if MLFLOW_TRACKING_URI:
+            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+            print(f"MLflow URI set to: {MLFLOW_TRACKING_URI}")
+        
+        # 2. Load Model first to get the actual run_id
+        print(f"Loading model from {model_uri}...")
+        model = mlflow.pyfunc.load_model(model_uri)
+        print("Model loaded successfully")
+        
+        # 3. Get the run_id from the loaded model's metadata
+        # The model object has metadata that includes the run_id
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        
+        # Parse model name and version/alias from URI
+        # Format: models:/MODEL_NAME@ALIAS or models:/MODEL_NAME/VERSION
+        model_name = model_info.get('model_name')
+        model_alias = model_info.get('model_alias')
+        
+        if model_alias:
+            # Get model version by alias
+            model_version_info = client.get_model_version_by_alias(model_name, model_alias)
+        else:
+            model_version = model_info.get('model_version')
+            model_version_info = client.get_model_version(model_name, model_version)
+        
+        run_id = model_version_info.run_id
+        print(f"Retrieved run_id from model version: {run_id}")
+        
+        # 4. Load Feature Config
+        try:
+            local_config_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="feature_config.json")
+            with open(local_config_path, 'r') as f:
+                feature_config = json.load(f)
+            print(f"Feature Config loaded: {feature_config}")
+        except Exception as e:
+            print(f"Warning: Could not load feature_config.json: {e}")
+            # Fallback to default config
+            feature_config = {
+                "features": ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5'],
+                "target": "Target",
+                "model_type": model_info.get('model_type', 'Unknown'),
+                "time_steps": 1,  # Default for LSTM
+                "n_features": 6
+            }
+            print(f"Using fallback feature config: {feature_config}")
+        
+        # 5. Load Scaler
+        try:
+            local_scaler_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="scaler/scaler.pkl")
+            scaler = joblib.load(local_scaler_path)
+            print("Scaler loaded")
+        except Exception as e:
+            print(f"Warning: Could not load scaler: {e}")
+            # Try local fallback
+            local_scaler = os.path.join(project_root, 'data', 'processed', 'scaler.pkl')
+            if os.path.exists(local_scaler):
+                scaler = joblib.load(local_scaler)
+                print("Loaded scaler from local fallback")
+            else:
+                print("No scaler available - predictions may be incorrect")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error loading from MLflow: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
-def load_model_and_data():
-    """Load model, scaler, and data from local storage or S3"""
-    global model, scaler, df_data
-    
-    print("Loading model and data...")
-    print(f"USE_S3: {USE_S3}")
-    
-    # Define local paths
-    model_path = os.path.join(project_root, 'models', 'lstm_trained_model.keras')
-    scaler_path = os.path.join(project_root, 'models', 'lstm_scaler.joblib')
-    
-    # If using S3, download files first
-    if USE_S3:
-        print(f"Downloading from S3 bucket: {S3_BUCKET}")
-        
-        if not download_from_s3(S3_BUCKET, S3_MODEL_KEY, model_path):
-            print("Failed to download model from S3")
-            return False
-        
-        if not download_from_s3(S3_BUCKET, S3_SCALER_KEY, scaler_path):
-            print("Failed to download scaler from S3")
-            return False
-    
-    # Check if files exist
-    if not os.path.exists(model_path):
-        print(f"Model not found: {model_path}")
-        return False
-    
-    if not os.path.exists(scaler_path):
-        print(f"Scaler not found: {scaler_path}")
-        return False
-    
-    # Load model
-    if TF_AVAILABLE:
-        model = load_model(model_path)
-        print("Model loaded")
-    else:
-        print("TensorFlow not available")
-        return False
-    
-    # Load scaler
-    scaler = joblib.load(scaler_path)
-    print("Scaler loaded")
-    
-    # Load data
-    if USE_S3:
-        # Download data from S3
-        data_path = os.path.join(project_root, 'data', 'processed', 'lstm_simple_test_data.csv')
-        if not download_from_s3(S3_BUCKET, S3_DATA_KEY, data_path):
-            print("Failed to download data from S3, trying local files")
-            return load_local_data()
-        
-        return load_data_file(data_path)
-    else:
-        return load_local_data()
+class FeatureEngineer:
+    def __init__(self, config, scaler):
+        self.config = config
+        self.scaler = scaler
+        self.feature_cols = config.get('features', [])
+        # Default fallback
+        if not self.feature_cols:
+             self.feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
 
-def load_local_data():
-    """Load data from local files"""
-    global df_data
-    
-    # Try multiple possible files
-    data_files = [
-        os.path.join(project_root, 'data', 'processed', 'lstm_simple_test_data.csv'),
-        os.path.join(project_root, 'data', 'processed', 'lstm_simple_train_data.csv'),
-        os.path.join(project_root, 'data', 'raw', 'eurusd_raw.csv')
-    ]
-    
-    for file_path in data_files:
-        if os.path.exists(file_path):
-            if load_data_file(file_path):
-                return True
-    
-    print("Could not load sufficient data from local files")
-    return False
+    def preprocess(self, df):
+        """
+        Takes raw dataframe with 'Close' (or 'close') and returns:
+        - X input for model
+        - Current price (for ref)
+        """
+        # copy to avoid modifying original
+        data = df.copy()
+        
+        # Normalize columns
+        if 'Close' not in data.columns and 'close' in data.columns:
+            data = data.rename(columns={'close': 'Close'})
+            
+        if 'Close' not in data.columns:
+            raise ValueError("Data must have a 'Close' column")
+            
+        # Calculate Returns
+        data['Return'] = data['Close'].pct_change()
+        
+        # Calculate features dynamically based on what's in config keys
+        # We assume standard naming convention: MA_X, Lag_X
+        # But for now, let's just compute the standard set and select what's needed.
+        # In a robust system, we would parse the feature names.
+        
+        # MA
+        data['MA_5'] = data['Close'].rolling(window=5).mean()
+        
+        # Lags
+        for lag in [1, 2, 3, 5]:
+            data[f'Lag_{lag}'] = data['Return'].shift(lag)
+            
+        # Drop NaNs
+        data = data.dropna()
+        
+        if len(data) == 0:
+            return None, None
+            
+        # Select features
+        # If config specifies 'Return_Unscaled', handle that (ARIMA case)
+        # But let's assume standard features for now.
+        
+        # Get the LAST row for prediction
+        last_row = data.iloc[[-1]][self.feature_cols]
+        current_price = data.iloc[-1]['Close']
+        
+        # Scale
+        if self.scaler:
+             X = self.scaler.transform(last_row)
+        else:
+             X = last_row.values
+             
+        # Reshape if LSTM
+        # We need to know if it's LSTM. Code/Config should tell us.
+        # Or we check config 'n_features' / 'time_steps'
+        if 'time_steps' in self.config:
+            time_steps = self.config['time_steps']
+            # n_features = self.config['n_features'] # verified from X.shape[1]
+            X = X.reshape((1, time_steps, X.shape[1]))
+            
+        return X, current_price
 
 def load_data_file(file_path):
     """Load data from a specific file"""
     global df_data
-    
     try:
-        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        # Load with skiprows to handle metadata
+        df = pd.read_csv(file_path, index_col=0, parse_dates=True, skiprows=[1, 2])
         
-        # Find price column
-        if 'close' in df.columns:
-            price_col = 'close'
-        elif 'Close' in df.columns:
-            price_col = 'Close'
-            df = df.rename(columns={'Close': 'close'})
+        # Ensure 'Close' column exists and is numeric
+        if 'Close' in df.columns:
+            # Convert to numeric, coercing errors to NaN
+            df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+            # Drop rows with NaN in Close
+            df = df.dropna(subset=['Close'])
+        elif 'close' in df.columns:
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df = df.dropna(subset=['close'])
+            df = df.rename(columns={'close': 'Close'})
         else:
-            print(f"No 'close' column in {file_path}")
+            print(f"No 'Close' column in {file_path}")
             return False
         
-        df_data = df[['close']].copy()
-        df_data = df_data.dropna()
-        
-        if len(df_data) >= SEQ_LENGTH:
-            print(f"Data loaded: {len(df_data)} rows from {os.path.basename(file_path)}")
+        # Ensure we have enough history for lags (at least 10 rows)
+        if len(df) > 10:
+            df_data = df
             return True
-        else:
-            print(f"Insufficient data in {file_path}: {len(df_data)} rows")
-            return False
+        return False
     except Exception as e:
         print(f"Error loading {file_path}: {e}")
         return False
 
-def make_prediction():
-    """Make prediction using loaded data"""
-    if model is None or scaler is None or df_data is None:
-        return None, None, None
-    
-    if len(df_data) < SEQ_LENGTH:
-        return None, None, None
-    
-    # Get recent prices
-    recent_prices = df_data['close'].tail(SEQ_LENGTH).values
-    
-    # Prepare for LSTM
-    prices_array = np.array(recent_prices).reshape(-1, 1)
-    scaled_prices = scaler.transform(prices_array)
-    sequence = scaled_prices.reshape(1, SEQ_LENGTH, 1)
-    
-    # Predict
-    scaled_prediction = model.predict(sequence, verbose=0)
-    prediction = scaler.inverse_transform(scaled_prediction)[0][0]
-    
-    current_price = recent_prices[-1]
-    change_pct = ((prediction - current_price) / current_price) * 100
-    
-    return float(prediction), float(current_price), float(change_pct)
+# Initialize
+print("Starting App...")
+load_success = load_from_mlflow()
 
-def get_stats():
-    """Get basic statistics"""
-    if df_data is None:
-        return None
-    
-    return {
-        'total_days': len(df_data),
-        'date_range': f"{df_data.index[0].strftime('%Y-%m-%d')} to {df_data.index[-1].strftime('%Y-%m-%d')}",
-        'current': float(df_data['close'].iloc[-1]),
-        'min': float(df_data['close'].min()),
-        'max': float(df_data['close'].max()),
-        'avg': float(df_data['close'].mean()),
-        'last_date': df_data.index[-1].strftime('%Y-%m-%d'),
-        'storage_type': 'S3' if USE_S3 else 'Local'
-    }
+# Try loading some data for default view (S3 or local)
+if USE_S3:
+    # Download data from S3
+    try:
+        os.makedirs('data/raw', exist_ok=True)
+        boto3.client('s3', region_name=AWS_REGION).download_file(S3_BUCKET, 'data/raw/eurusd_raw.csv', 'data/raw/eurusd_raw.csv')
+        load_data_file('data/raw/eurusd_raw.csv')
+        print("Loaded data from S3")
+    except Exception as e:
+        print(f"Failed to download data from S3: {e}")
 
-# Load everything at startup
-print("Starting EUR/USD Prediction App...")
-print(f"Storage mode: {'S3' if USE_S3 else 'Local'}")
-load_success = load_model_and_data()
+# Try local files if data not loaded yet
+if df_data is None:
+    local_data_paths = [
+        'data/raw/eurusd_raw.csv',
+        'data/processed/test.csv',
+        'data/processed/train.csv'
+    ]
+    for path in local_data_paths:
+        if os.path.exists(path):
+            if load_data_file(path):
+                print(f"Loaded data from local file: {path}")
+                break
+
+fe = None
+if load_success:
+    fe = FeatureEngineer(feature_config, scaler)
 
 @app.route('/')
 def home():
-    """Main page"""
     if not load_success:
-        return render_template('index.html',
-                             success=False,
-                             error="Failed to load model or data")
+        return render_template('index.html', success=False, error="Model not loaded")
     
-    # Get prediction
-    predicted_price, current_price, change_pct = make_prediction()
+    if df_data is None:
+         return render_template('index.html', success=False, error="Data not loaded")
+
+    # Predict
+    X, current_price = fe.preprocess(df_data)
+    if X is None:
+         return render_template('index.html', success=False, error="Not enough data")
+         
+    # Prediction
+    # Model returns:
+    # LR: [prediction] (scaled return?) No, in training we trained on Target (Future Return)
+    # Wait, in training:
+    # X = Scaled Features
+    # y = Raw Target (Return shifted) => Wait, did we scale y?
+    # In src/02: "MinMaxScaler on Train data only; transform both Train and Test."
+    # AND: "scaler.fit_transform(train_df[feature_cols])" -> Only features are scaled.
+    # So Y (Target) is NOT scaled. It is raw percentage return.
     
-    if predicted_price is None:
-        return render_template('index.html',
-                             success=False,
-                             error="Could not make prediction")
+    # So model.predict(X) returns Predicted Return (fraction, e.g. 0.001 for 0.1%)
     
-    # Get stats
-    stats = get_stats()
+    pred_return = model.predict(X)
+    # Handle varying output shapes
+    if isinstance(pred_return, pd.DataFrame):
+        pred_return = pred_return.values
+    if len(pred_return.shape) > 1:
+        pred_return = pred_return.flatten()[0]
+    else:
+        pred_return = pred_return[0]
+        
+    predicted_price = current_price * (1 + pred_return)
+    change_pct = pred_return * 100
     
-    # Prepare context
     context = {
         'success': True,
         'predicted_price': round(predicted_price, 4),
         'current_price': round(current_price, 4),
-        'change_pct': round(change_pct, 2),
-        'change_up': change_pct > 0,
-        'change_down': change_pct < 0,
-        'stats': stats,
-        'seq_length': SEQ_LENGTH,
-        'prediction_date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
-        'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'change_pct': round(change_pct, 4),
+        'model_info': feature_config,
+        'prediction_date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     }
-    
     return render_template('index.html', **context)
 
-@app.route('/api/predict')
+@app.route('/api/predict', methods=['GET', 'POST'])
 def api_predict():
-    """API endpoint"""
     if not load_success:
         return jsonify({'error': 'Model not loaded'}), 500
+        
+    # Get data from request or global
+    data = None
+    if request.method == 'POST':
+        json_data = request.get_json()
+        if json_data:
+            data = pd.DataFrame(json_data)
+            
+    if data is None:
+        data = df_data
+        
+    if data is None:
+        return jsonify({'error': 'No data provided'}), 400
+        
+    X, current_price = fe.preprocess(data)
     
-    predicted_price, current_price, change_pct = make_prediction()
-    
-    if predicted_price is None:
-        return jsonify({'error': 'Prediction failed'}), 500
+    pred_return = model.predict(X)
+    if hasattr(pred_return, 'values'):
+         pred_return = pred_return.values
+    if isinstance(pred_return, (list, np.ndarray)) and len(np.shape(pred_return)) > 0:
+        pred_return = pred_return.flatten()[0]
+        
+    predicted_price = float(current_price * (1 + pred_return))
     
     return jsonify({
         'predicted_price': predicted_price,
-        'current_price': current_price,
-        'change_percent': change_pct,
-        'prediction_for': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
-        'timestamp': datetime.now().isoformat(),
-        'storage_type': 'S3' if USE_S3 else 'Local'
+        'predicted_return': float(pred_return),
+        'current_price': float(current_price),
+        'model_type': feature_config.get('model_type', 'Unknown')
     })
-
-@app.route('/api/stats')
-def api_stats():
-    """Stats endpoint"""
-    if not load_success:
-        return jsonify({'error': 'Data not loaded'}), 500
-    
-    stats = get_stats()
-    return jsonify(stats)
 
 @app.route('/health')
 def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy' if load_success else 'unhealthy',
-        'timestamp': datetime.now().isoformat(),
-        'storage_type': 'S3' if USE_S3 else 'Local'
-    })
+    return jsonify({'status': 'healthy' if load_success else 'unhealthy'})
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
-    print(f"App running on http://0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)

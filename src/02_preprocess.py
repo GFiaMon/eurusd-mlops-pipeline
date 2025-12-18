@@ -93,5 +93,27 @@ def preprocess_data():
     
     print(f"Processed data saved to {PROCESSED_DATA_DIR}")
 
+    # Upload to S3
+    s3_bucket = os.getenv("S3_BUCKET")
+    if s3_bucket:
+        try:
+            import boto3
+            s3 = boto3.client('s3')
+            
+            artifacts = [TRAIN_DATA_PATH, TEST_DATA_PATH, SCALER_PATH]
+            
+            print(f"Uploading artifacts to s3://{s3_bucket}...")
+            for artifact in artifacts:
+                s3_key = artifact # Keep same path structure: data/processed/...
+                s3.upload_file(artifact, s3_bucket, s3_key)
+                print(f"  ✅ Uploaded {artifact}")
+                
+        except Exception as e:
+            print(f"  ❌ Upload failed: {e}")
+    else:
+        print("  ⚠️ S3_BUCKET not set in .env, skipping upload.")
+
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     preprocess_data()

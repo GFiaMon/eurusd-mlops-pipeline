@@ -2,14 +2,14 @@
     "run_id": "1c4829c17d97464fb599569a8964502d",
     "model_type": "LSTM",
     "model_name": "EURUSD_LSTM",
-    "model_version": "1",
+    "model_version": "3",
     "model_alias": "champion",
     "model_uri": "models:/EURUSD_LSTM@champion",
     "metrics": {
         "rmse": 0.005095419904398143
     },
     "baseline_metrics": {
-        "rmse": 0.007156552959964408,
+        "rmse": 0.007155213364635293,
         "directional_accuracy": 0.5096525096525096
     }
 }

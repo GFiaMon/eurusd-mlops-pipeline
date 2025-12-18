@@ -33,5 +33,22 @@ def ingest_data():
     print(f"Data saved to {RAW_DATA_PATH}")
     print(df.head())
 
+    # Upload to S3
+    s3_bucket = os.getenv("S3_BUCKET")
+    if s3_bucket:
+        try:
+            import boto3
+            s3 = boto3.client('s3')
+            s3_key = RAW_DATA_PATH # data/raw/eurusd_raw.csv
+            print(f"Uploading to S3: s3://{s3_bucket}/{s3_key}...")
+            s3.upload_file(RAW_DATA_PATH, s3_bucket, s3_key)
+            print("  ✅ Upload successful.")
+        except Exception as e:
+            print(f"  ❌ Upload failed: {e}")
+    else:
+        print("  ⚠️ S3_BUCKET not set in .env, skipping upload.")
+
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     ingest_data()

@@ -19,8 +19,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY api/ /app/api/
 
-# Copy models directory
-COPY models/ /app/models/
+# Copy only necessary data for local fallback (optional)
+# COPY data/ /app/data/
+
+# We do NOT copy models/ because we fetch best_model_info.json and model artifacts from S3/MLflow at runtime.
+# This ensures the container serves the latest champion without rebuild.
+
+# Create necessary directories
+RUN mkdir -p /app/models /app/data/processed /app/data/raw
 
 # Copy data directory (for local storage option)
 COPY data/ /app/data/

@@ -30,6 +30,7 @@ from tensorflow.keras.layers import LSTM, Dense
 PROCESSED_DATA_DIR = os.path.join("data", "processed")
 TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "train.csv")
 TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "test.csv")
+SCALER_PATH = os.path.join(PROCESSED_DATA_DIR, "scaler.pkl")
 EXPERIMENT_NAME = "EURUSD_Experiments"
 
 def eval_metrics(actual, pred):
@@ -109,6 +110,17 @@ def train_models():
         mlflow.log_metric("rmse", rmse)
         mlflow.log_metric("mae", mae)
         mlflow.log_metric("directional_accuracy", da)
+        
+        # Log Scaler as Artifact
+        mlflow.log_artifact(SCALER_PATH, artifact_path="scaler")
+        
+        # Log Feature Config
+        feature_config = {
+            "features": feature_cols,
+            "target": target_col,
+            "model_type": "LinearRegression"
+        }
+        mlflow.log_dict(feature_config, "feature_config.json")
         
         # Infer and log signature
         signature = infer_signature(X_train, predictions)
@@ -244,9 +256,19 @@ def train_models():
             
         mlflow.log_param("model_arch_summary", " -> ".join(model_summary))
         
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("mae", mae)
         mlflow.log_metric("directional_accuracy", da)
+        
+        # Log Scaler as Artifact
+        mlflow.log_artifact(SCALER_PATH, artifact_path="scaler")
+        
+        # Log Feature Config
+        feature_config = {
+            "features": feature_cols,
+            "target": target_col,
+            "time_steps": time_steps,
+            "n_features": n_features
+        }
+        mlflow.log_dict(feature_config, "feature_config.json")
 
         # Infer and log signature (This resolves the TF warning)
         signature = infer_signature(X_train_reshaped, predictions)

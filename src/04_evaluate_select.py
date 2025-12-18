@@ -183,7 +183,24 @@ def evaluate_and_select():
         with open(BEST_MODEL_INFO_PATH, 'w') as f:
             json.dump(info, f, indent=4)
             
+    if registered_models:
+        # ... (previous code) ...
         print(f"Best model info saved to {BEST_MODEL_INFO_PATH}")
+        
+        # Upload best_model_info.json to S3
+        s3_bucket = os.getenv("S3_BUCKET")
+        if s3_bucket:
+            try:
+                import boto3
+                s3 = boto3.client('s3')
+                s3_key = BEST_MODEL_INFO_PATH # models/best_model_info.json
+                print(f"Uploading to S3: s3://{s3_bucket}/{s3_key}...")
+                s3.upload_file(BEST_MODEL_INFO_PATH, s3_bucket, s3_key)
+                print("  ✅ Upload successful.")
+            except Exception as e:
+                print(f"  ❌ Upload failed: {e}")
+        else:
+            print("  ⚠️ S3_BUCKET not set in .env, skipping upload.")
             
     else:
         print("No valid runs found to evaluate.")
