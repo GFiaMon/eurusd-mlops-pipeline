@@ -81,6 +81,7 @@ def load_from_mlflow():
 
     print(f"Model Info: {model_info}")
     model_uri = model_info.get('model_uri')
+    model_type = model_info.get('model_type', 'Unknown')
     
     if not model_uri:
         print("Invalid model info: missing model_uri")
@@ -91,9 +92,17 @@ def load_from_mlflow():
             mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
             print(f"MLflow URI set to: {MLFLOW_TRACKING_URI}")
         
-        # 2. Load Model first to get the actual run_id
+        # 2. Load Model - special handling for ARIMA
         print(f"Loading model from {model_uri}...")
-        model = mlflow.pyfunc.load_model(model_uri)
+        
+        # For ARIMA, we need to load the underlying sklearn model directly
+        # because MLflow's pyfunc wrapper doesn't support ARIMA's predict(n_periods=1) interface
+        if 'arima' in model_type.lower():
+            print("Detected ARIMA model - using sklearn loader")
+            model = mlflow.sklearn.load_model(model_uri)
+        else:
+            model = mlflow.pyfunc.load_model(model_uri)
+            
         print("Model loaded successfully")
         
         # 3. Get the run_id from the loaded model's metadata
@@ -128,7 +137,7 @@ def load_from_mlflow():
             feature_config = {
                 "features": ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5'],
                 "target": "Target",
-                "model_type": model_info.get('model_type', 'Unknown'),
+                "model_type": model_type,
                 "time_steps": 1,  # Default for LSTM
                 "n_features": 6
             }
@@ -220,22 +229,25 @@ class FeatureEngineer:
         last_row = data.iloc[[-1]][available_features]
         current_price = data.iloc[-1]['Close']
         
-        # Scale
+        # Scale - keep as DataFrame for MLflow schema validation
         if self.scaler:
              try:
-                 X = self.scaler.transform(last_row)
+                 X_scaled = self.scaler.transform(last_row)
+                 # Convert back to DataFrame with column names for MLflow
+                 X = pd.DataFrame(X_scaled, columns=available_features, index=last_row.index)
              except Exception as e:
                  print(f"Scaling failed: {e}. Using raw values.")
-                 X = last_row.values
+                 X = last_row
         else:
-             X = last_row.values
+             X = last_row
              
         # Reshape based on model type
-        # LSTM expects (samples, time_steps, features)
-        # Linear Regression and others usually expect (samples, features)
+        # LSTM expects (samples, time_steps, features) as numpy array
+        # Linear Regression and others expect DataFrame with named columns
         if 'lstm' in self.model_type.lower():
             time_steps = self.config.get('time_steps', 1)
-            X = X.reshape((1, time_steps, X.shape[1]))
+            # For LSTM, convert to numpy and reshape
+            X = X.values.reshape((1, time_steps, X.shape[1]))
             
         return X, current_price
 
@@ -315,8 +327,15 @@ def home():
         if X is None:
              return render_template('index.html', success=False, error="Not enough data to generate features")
              
-        # Prediction
-        pred_return = model.predict(X)
+        # Prediction - handle ARIMA specially
+        model_type = feature_config.get('model_type', 'Unknown')
+        
+        if 'arima' in model_type.lower():
+            # ARIMA models use predict(n_periods=1) interface
+            pred_return = model.predict(n_periods=1)[0]
+        else:
+            # Standard prediction for Linear Regression and LSTM
+            pred_return = model.predict(X)
         
         # Handle varying output shapes (numpy, pandas, etc.)
         if hasattr(pred_return, 'values'):
@@ -388,7 +407,16 @@ def api_predict():
         
     X, current_price = fe.preprocess(data)
     
-    pred_return = model.predict(X)
+    # Prediction - handle ARIMA specially
+    model_type = feature_config.get('model_type', 'Unknown')
+    
+    if 'arima' in model_type.lower():
+        # ARIMA models use predict(n_periods=1) interface
+        pred_return = model.predict(n_periods=1)[0]
+    else:
+        # Standard prediction for Linear Regression and LSTM
+        pred_return = model.predict(X)
+        
     if hasattr(pred_return, 'values'):
          pred_return = pred_return.values
     if isinstance(pred_return, (list, np.ndarray)) and len(np.shape(pred_return)) > 0:
