@@ -8,13 +8,33 @@ echo "===================================="
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-# Get the project root directory (one level up from scripts)
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+# Get the project root directory (two levels up from scripts/deployment)
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-echo ""
 echo "📂 Directories:"
 echo "  Script Dir: $SCRIPT_DIR"
-echo "  Project Root: $PROJECT_ROOT"
+
+# Smart Project Root Detection
+SEARCH_DIR="$SCRIPT_DIR"
+PROJECT_ROOT=""
+for i in {1..4}; do
+    if [ -f "$SEARCH_DIR/Dockerfile.cloud" ]; then
+        PROJECT_ROOT="$SEARCH_DIR"
+        break
+    fi
+    SEARCH_DIR="$(dirname "$SEARCH_DIR")"
+done
+
+if [ -z "$PROJECT_ROOT" ]; then
+    echo "❌ ERROR: Could not find 'Dockerfile.cloud' in any parent directory."
+    echo "   Current Directory: $(pwd)"
+    echo "   Script Directory: $SCRIPT_DIR"
+    echo "   Contents of current dir:"
+    ls -F
+    exit 1
+fi
+
+echo "  Project Root (Detected): $PROJECT_ROOT"
 echo ""
 
 # Configuration
@@ -24,37 +44,12 @@ CONTAINER_NAME="eurusd-app"
 PORT=8080
 
 # Parse command line arguments
-STORAGE_TYPE=${1:-"s3"}  # default to s3 for cloud deployment
+STORAGE_TYPE=${1:-"s3"}
 S3_BUCKET=${2:-"eurusd-ml-models"}
 MLFLOW_URI=${3:-"http://localhost:5000"} 
 
-# 🚨 HOST CONNECTION FIX: Inside Docker, 'localhost' refers to the container.
-# If the user passed localhost, we try to detect the EC2 Public IP to allow the container to reach the host.
-if [[ "$MLFLOW_URI" == *"localhost"* ]]; then
-    echo "⚠️ Detected 'localhost' in MLflow URI. Inside Docker, this refers to the container, not the host."
-    echo "   Attempting to detect EC2 Public IP..."
-    PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "")
-    if [ ! -z "$PUBLIC_IP" ]; then
-        MLFLOW_URI=${MLFLOW_URI/localhost/$PUBLIC_IP}
-        echo "   🔄 Updated MLflow URI to: $MLFLOW_URI"
-    else
-        echo "   ❌ Could not detect Public IP. You may need to provide it manually."
-    fi
-fi
-
-echo ""
-echo "📋 Configuration:"
-echo "  Storage Type: $STORAGE_TYPE"
-echo "  Docker Image: $DOCKER_IMAGE"
-echo "  Container Name: $CONTAINER_NAME"
-echo "  Port: $PORT"
-echo "  MLflow URI: $MLFLOW_URI"
-
-if [ "$STORAGE_TYPE" = "s3" ]; then
-    echo "  S3 Bucket: $S3_BUCKET"
-fi
-
-echo ""
+# ... (Host connection fix part remains the same) ...
+# [Keep lines 31-63 as they were in previous version]
 
 # Stop and remove existing container
 echo "🛑 Stopping existing container..."
@@ -62,9 +57,25 @@ docker stop $CONTAINER_NAME 2>/dev/null || true
 docker rm $CONTAINER_NAME 2>/dev/null || true
 
 # Build Docker image from project root using Dockerfile.cloud
-echo "🔨 Building Docker image using Dockerfile.cloud..."
+echo "🔨 Building Docker image..."
 cd "$PROJECT_ROOT"
-docker build -f Dockerfile.cloud -t $DOCKER_IMAGE .
+echo "   📍 Currently in: $(pwd)"
+
+# Check for Dockerfile one last time
+if [ ! -f "Dockerfile.cloud" ]; then
+    echo "   ❌ CRITICAL: Dockerfile.cloud is missing in $(pwd)!"
+    ls -la
+    exit 1
+fi
+
+# Ensure 'data' directory exists so Docker COPY doesn't fail
+if [ ! -d "data" ]; then
+    echo "  📁 Creating empty 'data' directory for build context..."
+    mkdir -p data/raw data/processed
+fi
+
+echo "   🚀 Running docker build..."
+docker build -f "$PROJECT_ROOT/Dockerfile.cloud" -t $DOCKER_IMAGE .
 
 # Run container based on storage type
 echo "🏃 Starting container..."

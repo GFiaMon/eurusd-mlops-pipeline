@@ -8,6 +8,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -20,35 +22,24 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY api/ /app/api/
 
-# Copy only necessary data for local fallback (optional)
-# COPY data/ /app/data/
-
-# We do NOT copy models/ because we fetch best_model_info.json and model artifacts from S3/MLflow at runtime.
-# This ensures the container serves the latest champion without rebuild.
-
 # Create necessary directories
 RUN mkdir -p /app/models /app/data/processed /app/data/raw
 
 # Copy data directory (for local storage option)
+# Note: If using S3, you can skip this to keep the image slim
 COPY data/ /app/data/
-
-# Create necessary directories
-RUN mkdir -p /app/models /app/data/processed /app/data/raw
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV FLASK_APP=api/app_cloud.py
 ENV PORT=8080
 
-# Install curl for healthcheck
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-
 # Expose port
 EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the application
-CMD ["python", "api/app_cloud.py"]
+# Run the application using Gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "api.app_cloud:app"]

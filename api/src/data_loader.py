@@ -22,11 +22,30 @@ def load_data_from_s3(bucket_name: str, prefix: str = "data/raw/") -> pd.DataFra
         # dataset=True tells wr to look for all files in the folder (partitioned dataset)
         df = wr.s3.read_csv(path=path, dataset=True)
         
-        # Ensure sorting if needed (though wr usually keeps order if partitioned, explicit sort is safer)
+        # Ensure proper data types for numeric columns
+        numeric_cols = ['Close', 'Open', 'High', 'Low', 'Volume']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Drop rows with NaN in Close (essential column)
+        if 'Close' in df.columns:
+            df = df.dropna(subset=['Close'])
+        
+        # Handle Date column and set as index
         if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
+            # Convert to datetime first
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            df = df.dropna(subset=['Date'])  # Remove any rows with invalid dates
             df = df.drop_duplicates(subset=['Date'], keep='last')
             df = df.sort_values('Date').set_index('Date')
+        elif df.index.name != 'Date':
+            # If Date is already the index but wasn't recognized
+            try:
+                df.index = pd.to_datetime(df.index, errors='coerce')
+                df = df.sort_index()
+            except Exception as e:
+                print(f"Warning: Could not convert index to datetime: {e}")
             
         return df
         
