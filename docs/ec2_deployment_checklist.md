@@ -38,6 +38,8 @@ Since you prefer to keep everything in the home directory, your folder structure
 # Safely remove only legacy/unused files
 rm -rf models eurusd-app.tar.gz Dockerfile deploy.sh Dockerfile.api
 ```
+rm -rf models eurusd-app.tar.gz Dockerfile deploy.sh Dockerfile.api
+
 
 ## Step 2: Update Local Dependencies
 

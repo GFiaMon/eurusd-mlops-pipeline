@@ -40,6 +40,7 @@ load_success = False
 # Configuration
 USE_S3 = os.getenv('USE_S3', 'false').lower() == 'true'
 S3_BUCKET = os.getenv('S3_BUCKET', 'your-bucket-name')
+S3_PREFIX = os.getenv('S3_PREFIX', 'data/raw/')
 S3_MODEL_INFO_KEY = os.getenv('S3_MODEL_INFO_KEY', 'models/best_model_info.json') # Key to JSON
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
@@ -287,17 +288,22 @@ load_success = load_from_mlflow()
 
 # Try loading some data for default view (S3 or local)
 if USE_S3:
-    # Download data from S3
+    # Use the data loader to fetch and merge partitioned data
     try:
-        os.makedirs('data/raw', exist_ok=True)
-        boto3.client('s3', region_name=AWS_REGION).download_file(S3_BUCKET, 'data/raw/eurusd_raw.csv', 'data/raw/eurusd_raw.csv')
-        load_data_file('data/raw/eurusd_raw.csv')
-        print("Loaded data from S3")
+        from api.src.data_loader import load_data_from_s3
+        print(f"Loading data from S3 bucket: {S3_BUCKET}...")
+        df_data = load_data_from_s3(S3_BUCKET, prefix=S3_PREFIX if S3_PREFIX else "data/raw/") # Defaults to data/raw/ prefix
+        if not df_data.empty:
+            print(f"Successfully loaded {len(df_data)} rows from S3")
+        else:
+            print("S3 load returned empty DataFrame.")
     except Exception as e:
-        print(f"Failed to download data from S3: {e}")
+        print(f"Failed to load data from S3: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Try local files if data not loaded yet
-if df_data is None:
+if df_data is None or df_data.empty:
     local_data_paths = [
         'data/raw/eurusd_raw.csv',
         'data/processed/test.csv',

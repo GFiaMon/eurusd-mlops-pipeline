@@ -39,11 +39,11 @@ venv.bak/
 *~
 
 # Data files
-data/raw/*.csv
-data/raw/*.json
-!data/raw/.gitkeep
-data/processed/
-data/models/
+# data/raw/*.csv
+# data/raw/*.json
+# !data/raw/.gitkeep
+# data/processed/
+# data/models/
 
 # Archive
 archive/
