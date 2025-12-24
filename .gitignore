@@ -49,7 +49,7 @@ venv.bak/
 archive/
 aws/uploads/
 
-notebooks/
+notebooks/old/
 
 # ML artifacts
 mlruns/

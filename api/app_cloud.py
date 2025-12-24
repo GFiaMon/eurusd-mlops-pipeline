@@ -203,12 +203,23 @@ class FeatureEngineer:
 
         # Calculate features dynamically based on what's in self.feature_cols
         # For simplicity, we assume the standard set is available
-        # MA
-        data['MA_5'] = data['Close'].rolling(window=5).mean()
         
-        # Lags
+        # Moving Averages
+        for ma in [5, 10, 20, 50]:
+            data[f'MA_{ma}'] = data['Close'].rolling(window=ma).mean()
+            
+        # Shifted Returns (Lags)
         for lag in [1, 2, 3, 5]:
             data[f'Lag_{lag}'] = data['Return'].shift(lag)
+
+        # Longer Horizon Returns (Momentum)
+        for r in [5, 20]:
+            data[f'Return_{r}d'] = data['Close'].pct_change(periods=r)
+            
+        # Ensure OHLC are available (renaming if lower case)
+        for col in ['Open', 'High', 'Low']:
+            if col not in data.columns and col.lower() in data.columns:
+                 data = data.rename(columns={col.lower(): col})
             
         # Drop NaNs
         data = data.dropna()
@@ -292,7 +303,8 @@ if USE_S3:
     try:
         from api.src.data_loader import load_data_from_s3
         print(f"Loading data from S3 bucket: {S3_BUCKET}...")
-        df_data = load_data_from_s3(S3_BUCKET, prefix=S3_PREFIX if S3_PREFIX else "data/raw/") # Defaults to data/raw/ prefix
+        # Pass skiprows to handle the specific yfinance multi-header format
+        df_data = load_data_from_s3(S3_BUCKET, prefix=S3_PREFIX if S3_PREFIX else "data/raw/", skiprows=[1, 2])
         if not df_data.empty:
             print(f"Successfully loaded {len(df_data)} rows from S3")
         else:

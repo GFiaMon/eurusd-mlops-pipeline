@@ -18,7 +18,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from pmdarima import auto_arima
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Input
+from tensorflow.keras.layers import LSTM, Dense, Input, Dropout
 
 # Force CPU to avoid Metal issues on Mac
 try:
@@ -56,7 +56,15 @@ def train_models():
     train_df = pd.read_csv(TRAIN_DATA_PATH, index_col=0, parse_dates=True)
     test_df = pd.read_csv(TEST_DATA_PATH, index_col=0, parse_dates=True)
     
-    feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
+    # Updated Feature List
+    feature_cols = ['Return', 'MA_5', 'MA_10', 'MA_20', 'MA_50', 'Return_5d', 'Return_20d', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
+    # Add OHLC columns if they exist in the dataframe
+    potential_cols = ['Open', 'High', 'Low', 'Close']
+    for col in potential_cols:
+        if col in train_df.columns:
+            feature_cols.append(col)
+            
+    print(f"Features used for training: {feature_cols}")
     target_col = 'Target'
     
     X_train = train_df[feature_cols]
@@ -211,6 +219,80 @@ def train_models():
         mlflow.set_tag("model_type", "LSTM")
         
         print("Training LSTM...")
+        
+        # --- NEW LSTM IMPLEMENTATION (Sliding Window & Deeper Arch) ---
+        
+        # Helper to create sequences
+        def create_sequences(data, target, time_steps):
+            X, y = [], []
+            # We need 'time_steps' of history to predict target at 'i + time_steps - 1'
+            # (which matches the feature row at that index)
+            # Alignment:
+            # Inputs: rows [i : i+time_steps] (0..59)
+            # Target: row [i+time_steps-1] (59)
+            # Wait, row 59 has Target_59 which is Return_{60}.
+            # We want to predict Return_{60} using Features_{0}..Features_{59}.
+            # So X = data[i: i+time_steps]
+            # y = target[i+time_steps-1]
+            for i in range(len(data) - time_steps + 1):
+                X.append(data[i:(i + time_steps)])
+                val = target[i + time_steps - 1]
+                y.append(val)
+            return np.array(X), np.array(y)
+
+        # Config
+        time_steps = 60
+        n_features = X_train.shape[1]
+        
+        # Generate Sequences
+        # Note: We must use .values
+        X_train_seq, y_train_seq = create_sequences(X_train.values, y_train.values, time_steps)
+        X_test_seq, y_test_seq = create_sequences(X_test.values, y_test.values, time_steps)
+        
+        print(f"  LSTM Input Shape: {X_train_seq.shape}")
+        
+        epochs = 20
+        batch_size = 32
+        
+        model = Sequential()
+        model.add(Input(shape=(time_steps, n_features)))
+        
+        # Layer 1
+        model.add(LSTM(100, return_sequences=True))
+        model.add(Dropout(0.2))
+        
+        # Layer 2
+        model.add(LSTM(100, return_sequences=True))
+        model.add(Dropout(0.2))
+        
+        # Layer 3
+        model.add(LSTM(50, return_sequences=True))
+        model.add(Dropout(0.2))
+        
+        # Layer 4
+        model.add(LSTM(50, return_sequences=False))
+        model.add(Dropout(0.2))
+        
+        # Output
+        model.add(Dense(25))
+        model.add(Dense(1))
+        
+        model.compile(optimizer='adam', loss='mse')
+        
+        # Train
+        model.fit(X_train_seq, y_train_seq, epochs=epochs, batch_size=batch_size, verbose=1)
+        
+        predictions = model.predict(X_test_seq)
+        predictions = predictions.flatten()
+        
+        rmse, mae, da = eval_metrics(y_test_seq, predictions)
+        
+        print(f"  RMSE: {rmse}")
+        print(f"  MAE: {mae}")
+        print(f"  Directional Accuracy: {da}")
+
+        # --- OLD LSTM IMPLEMENTATION (Commented for comparison) ---
+        """
         # Input Shape: [Samples, Time Steps, Features]
         # We treat each row as 1 Time Step with N features.
         time_steps = 1
@@ -236,13 +318,15 @@ def train_models():
         predictions = predictions.flatten()
         
         rmse, mae, da = eval_metrics(y_test, predictions)
-        
+
         print(f"  RMSE: {rmse}")
         print(f"  MAE: {mae}")
         print(f"  Directional Accuracy: {da}")
+        """
+        # -------------------------------------------------------------
         
         # Log Architecture Details Modularly
-        mlflow.log_param("input_shape", f"[{X_train.shape[0]}, {time_steps}, {n_features}]")
+        mlflow.log_param("input_shape", f"[{X_train_seq.shape[0]}, {time_steps}, {n_features}]")
         mlflow.log_param("time_steps", time_steps)
         mlflow.log_param("n_features", n_features)
         mlflow.log_param("epochs", epochs)
@@ -283,7 +367,7 @@ def train_models():
         mlflow.log_dict(feature_config, "feature_config.json")
 
         # Infer and log signature (This resolves the TF warning)
-        signature = infer_signature(X_train_reshaped, predictions)
+        signature = infer_signature(X_train_seq, predictions)
         mlflow.tensorflow.log_model(model, artifact_path="model", signature=signature)
 
 if __name__ == "__main__":

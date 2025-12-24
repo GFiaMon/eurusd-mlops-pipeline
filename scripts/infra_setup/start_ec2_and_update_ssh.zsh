@@ -1,8 +1,8 @@
 #!/bin/zsh
 
 # Configuration
-TAG_NAME="eurusd-predictor"
-SSH_HOST_ALIAS="capst2-inference-app"  # Change this to match your SSH config Host entry
+TAG_NAME="eurusd-api-server"
+SSH_HOST_ALIAS="eurusd-inference-app"  # Change this to match your SSH config Host entry
 
 echo "Starting EC2 instance with tag Name:${TAG_NAME}..."
 

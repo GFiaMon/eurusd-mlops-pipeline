@@ -39,25 +39,27 @@ def preprocess_data():
     # Daily Returns (Percentage)
     df['Return'] = df['Close'].pct_change()
     
-    # 5-day SMA
-    df['MA_5'] = df['Close'].rolling(window=5).mean()
-    
-    # Lagged Returns
+    # Moving Averages
+    for ma in [5, 10, 20, 50]:
+        df[f'MA_{ma}'] = df['Close'].rolling(window=ma).mean()
+        
+    # Lagged Returns (1 day is 'Return')
+    # Returns over longer periods (Momentum)
+    for r in [5, 20]:
+        df[f'Return_{r}d'] = df['Close'].pct_change(periods=r)
+
+    # Lagged Features for 1-step prediction (Standard Regression features)
+    # We still keep these for the granular regression model
     for lag in [1, 2, 3, 5]:
         df[f'Lag_{lag}'] = df['Return'].shift(lag)
         
-    # Drop NaNs created by rolling and shifting and pct_change
+    # Drop NaNs created by rolling and shifting (max rolling is 50)
     df = df.dropna()
     
     # Define features and target
-    # We are predicting Tomorrow's Return, so we need to shift the target or features.
-    # Standard approach: Predict Return_t using information available at t-1.
-    # But description says "Forecast Tomorrow's EUR/USD Daily Return". 
-    # So if we are at row `t` (today), we want to predict `Return_{t+1}`.
-    # Let's create a 'Target' column which is 'Return' shifted by -1.
-    
+    # Target: Return_{t+1}
     df['Target'] = df['Return'].shift(-1)
-    df = df.dropna() # Drop the last row which has no target
+    df = df.dropna()
     
     # Split Chronologically (80/20)
     train_size = int(len(df) * 0.8)
@@ -73,14 +75,26 @@ def preprocess_data():
     
     # Scaling
     print("Scaling data...")
-    feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
-    # Note: We scale features. Target usually doesn't need scaling for Regression/ARIMA but might helpful for LSTM. 
-    # However task says "Forecast Daily Returns", and we convert back to price later. 
-    # Let's scale features only for now as is typical for inputs. 
-    # Actually, for LSTM it's often good to scale everything. 
-    # Let's scale features. Target is a percentage, already small scale, so maybe fine. 
-    # Requirement: "Fit a MinMaxScaler on Train data only; transform both Train and Test."
+    # Update feature list to include OHLC and new features
+    # Note: OHLC are in 'df' if read correctly. 
+    # Let's verify we have them. If not, we might need to handle it.
+    # Assuming 'Open', 'High', 'Low' are available from yfinance download.
     
+    essential_cols = ['Open', 'High', 'Low', 'Close']
+    missing_cols = [c for c in essential_cols if c not in df.columns]
+    if missing_cols:
+         print(f"Warning: Columns {missing_cols} missing. Using available.")
+         
+    # Construct feature list
+    feature_cols = ['Return', 'MA_5', 'MA_10', 'MA_20', 'MA_50', 'Return_5d', 'Return_20d', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
+    
+    # Add OHLC to features if present (scaled)
+    for col in ['Open', 'High', 'Low', 'Close']:
+        if col in df.columns:
+            feature_cols.append(col)
+            
+    print(f"Features to scale: {feature_cols}")
+
     scaler = MinMaxScaler()
     train_df[feature_cols] = scaler.fit_transform(train_df[feature_cols])
     test_df[feature_cols] = scaler.transform(test_df[feature_cols])
