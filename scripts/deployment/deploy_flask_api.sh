@@ -65,7 +65,16 @@ echo "Config: KEY_PEM=$KEY_PEM, EC2_IP=$EC2_IP"
 # 0. Sync DataManager to API directory (Deployment Copy)
 echo "📋 Syncing DataManager to API..."
 mkdir -p api/utils
-cp utils/data_manager.py api/utils/data_manager.py
+# Only copy if source exists (when running from project root)
+if [ -f "utils/data_manager.py" ]; then
+    cp utils/data_manager.py api/utils/data_manager.py
+    echo "✅ DataManager copied from utils/"
+elif [ -f "api/utils/data_manager.py" ]; then
+    echo "✅ DataManager already in api/utils/"
+else
+    echo "❌ ERROR: data_manager.py not found in utils/ or api/utils/"
+    exit 1
+fi
 # Create __init__.py if it doesn't exist
 touch api/utils/__init__.py
 echo "✅ DataManager synced"

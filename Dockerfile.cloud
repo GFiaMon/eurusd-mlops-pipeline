@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY api/ /app/api/
 
+# Copy utils directory for DataManager
+COPY utils/ /app/utils/
+
 # Create necessary directories
 RUN mkdir -p /app/models /app/data/processed /app/data/raw
 

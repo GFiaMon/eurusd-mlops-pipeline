@@ -15,6 +15,18 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Optional S3 support
+try:
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    S3_AVAILABLE = True
+except ImportError:
+    S3_AVAILABLE = False
+    print("Warning: boto3 not available - S3 functionality disabled")
+
+# Project root detection
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
 # Try to import DataManager
 # Allows running locally (from project root) or on EC2 (where we copy utils to api/utils)
 try:
