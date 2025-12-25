@@ -13,8 +13,7 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 from sklearn.metrics import mean_squared_error
 
 # Constants
-PROCESSED_DATA_DIR = os.path.join("data", "processed")
-TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "test.csv")
+# Constants
 MODELS_DIR = "models"
 BEST_MODEL_INFO_PATH = os.path.join(MODELS_DIR, "best_model_info.json")
 EXPERIMENT_NAME = "EURUSD_Experiments"
@@ -22,11 +21,19 @@ EXPERIMENT_NAME = "EURUSD_Experiments"
 def evaluate_and_select():
     # 1. Load Test Data for Baseline Comparison
     print("Loading test data for baseline comparison...")
-    if not os.path.exists(TEST_DATA_PATH):
-        print("Error: Test data not found.")
+    try:
+        from utils.data_manager import DataManager
+    except ImportError:
+        import sys
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from utils.data_manager import DataManager
+
+    dm = DataManager(data_type='processed')
+    _, test_df, _ = dm.load_processed()
+
+    if test_df is None:
+        print("Error: Test data not found (DataManager load failed).")
         return
-        
-    test_df = pd.read_csv(TEST_DATA_PATH, index_col=0, parse_dates=True)
     # Naive Baseline: Prediction = Previous day's return
     # In our dataset, 'Return' is current day return. 'Target' is Next Day return.
     # So Naive prediction for Target(t) (which is Return(t+1)) is Return(t).

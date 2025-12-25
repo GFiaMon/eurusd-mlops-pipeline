@@ -59,6 +59,18 @@ docker rm $CONTAINER_NAME 2>/dev/null || true
 # Build Docker image from project root using Dockerfile.cloud
 echo "🔨 Building Docker image..."
 cd "$PROJECT_ROOT"
+echo "Deploying Flask API to EC2..."
+echo "Config: KEY_PEM=$KEY_PEM, EC2_IP=$EC2_IP"
+
+# 0. Sync DataManager to API directory (Deployment Copy)
+echo "📋 Syncing DataManager to API..."
+mkdir -p api/utils
+cp utils/data_manager.py api/utils/data_manager.py
+# Create __init__.py if it doesn't exist
+touch api/utils/__init__.py
+echo "✅ DataManager synced"
+
+# 1. Prepare Docker files (ensure they are in api/)me
 echo "   📍 Currently in: $(pwd)"
 
 # Check for Dockerfile one last time

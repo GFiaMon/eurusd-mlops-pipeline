@@ -81,6 +81,14 @@ echo "Packaging Lambda using Docker..."
 rm -rf build_package deployment_package.zip
 mkdir -p build_package
 
+# 0. Sync DataManager to Lambda directory (Deployment Copy)
+echo "📋 Syncing DataManager to Lambda package..."
+# Copy to source dir first so it's included in zip later if needed, 
+# OR copy directly to build package. 
+# Better strategy: Copy to source dir (gitignored) so structure is valid locally too.
+cp utils/data_manager.py aws_lambda/ingest/data_manager.py
+echo "✅ DataManager synced"
+
 # Define local path for mounting
 LOCAL_PATH=$(pwd)/build_package
 
@@ -92,6 +100,8 @@ docker run --platform linux/amd64 --rm -v "$LOCAL_PATH":/var/task public.ecr.aws
 
 # Copy function code (after build to avoid it being overwritten or needing mount)
 cp aws_lambda/ingest/lambda_function.py build_package/
+# Copy DataManager into build package
+cp aws_lambda/ingest/data_manager.py build_package/
 
 # Zip
 cd build_package

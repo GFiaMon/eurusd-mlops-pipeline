@@ -60,12 +60,18 @@ pip install -r requirements.txt
 python -m ipykernel install --user --name="venv_eurusd" --display-name="EUR/USD Capstone"
 ```
 
-### 2. Run Data Collection
-```python
-# In notebook or script
-from src.data.collect_data import fetch_eurusd_data
-df = fetch_eurusd_data(years=3)
+### 2. Run Data Pipeline (New!)
+The project uses a unified **Cloud-First, Local-Mirror** data architecture.
+
+```bash
+# 1. Ingest Data (Syncs with S3 automatically)
+python src/01_ingest_data.py
+
+# 2. Preprocess Data (Generates train/test/scaler)
+python src/02_preprocess.py
 ```
+
+📖 **[Read the Data Architecture Guide](docs/DATA_PIPELINE_ARCHITECTURE.md)** for detailed info on S3 sourcing, Lambda ingestion, and offline modes.
 
 ### 3. Run ML Pipeline
 ```bash
@@ -90,6 +96,7 @@ python ml_pipeline.py
 
 ## 🛠️ Tools & Technologies
 - **ML**: scikit-learn, pandas, numpy
+- **Data Pipeline**: Custom `DataManager` (S3/Local Sync)
 - **MLOps**: MLflow
 - **API**: FastAPI
 - **Deployment**: AWS (SageMaker/EC2)

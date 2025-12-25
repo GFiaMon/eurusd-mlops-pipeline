@@ -15,17 +15,20 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add project root to path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_root)
-
-# Try to import boto3 for S3 support
+# Try to import DataManager
+# Allows running locally (from project root) or on EC2 (where we copy utils to api/utils)
 try:
-    import boto3
-    from botocore.exceptions import ClientError
-    S3_AVAILABLE = True
+    from utils.data_manager import DataManager
 except ImportError:
-    S3_AVAILABLE = False
+    try:
+        # Fallback for local execution from api/ directory without symlink
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from utils.data_manager import DataManager
+    except ImportError:
+        print("CRITICAL: DataManager not found. Ensure utils/data_manager.py exists.")
+        DataManager = None
+
+# Initialize Flask app
 
 # Initialize Flask app
 app = Flask(__name__, template_folder='frontend')
@@ -263,69 +266,44 @@ class FeatureEngineer:
             
         return X, current_price
 
-def load_data_file(file_path):
-    """Load data from a specific file"""
-    global df_data
-    try:
-        # Load with skiprows to handle metadata
-        df = pd.read_csv(file_path, index_col=0, parse_dates=True, skiprows=[1, 2])
-        
-        # Ensure 'Close' column exists and is numeric
-        if 'Close' in df.columns:
-            # Convert to numeric, coercing errors to NaN
-            df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
-            # Drop rows with NaN in Close
-            df = df.dropna(subset=['Close'])
-        elif 'close' in df.columns:
-            df['close'] = pd.to_numeric(df['close'], errors='coerce')
-            df = df.dropna(subset=['close'])
-            df = df.rename(columns={'close': 'Close'})
-        else:
-            print(f"No 'Close' column in {file_path}")
-            return False
-        
-        # Ensure we have enough history for lags (at least 10 rows)
-        if len(df) > 10:
-            df_data = df
-            return True
-        return False
-    except Exception as e:
-        print(f"Error loading {file_path}: {e}")
-        return False
+# Helper removed - DataManager handles loading
+
 
 # Initialize
 print("Starting App...")
 load_success = load_from_mlflow()
 
-# Try loading some data for default view (S3 or local)
-if USE_S3:
-    # Use the data loader to fetch and merge partitioned data
+# Load data using DataManager
+print("Loading historical data...")
+if DataManager:
+    # Auto-detect mode, or force cloud if USE_S3 is set
+    # On EC2, DataManager will auto-detect EC2 environment
+    dm_mode = 'cloud' if USE_S3 else 'auto'
+    
+    dm = DataManager(
+        mode=dm_mode,
+        s3_bucket=S3_BUCKET,
+        s3_prefix=S3_PREFIX
+    )
+    
+    print(f"DataManager initialized (Environment: {dm.get_environment()})")
+    
     try:
-        from api.src.data_loader import load_data_from_s3
-        print(f"Loading data from S3 bucket: {S3_BUCKET}...")
-        # Pass skiprows to handle the specific yfinance multi-header format
-        df_data = load_data_from_s3(S3_BUCKET, prefix=S3_PREFIX if S3_PREFIX else "data/raw/", skiprows=[1, 2])
+        # Get latest data (uses local mirror, syncs from S3 if needed)
+        # We don't need force_refresh=True every time, relies on cache for speed
+        df_data = dm.get_latest_data()
+        
         if not df_data.empty:
-            print(f"Successfully loaded {len(df_data)} rows from S3")
+            print(f"Successfully loaded {len(df_data)} rows. Range: {df_data.index.min()} to {df_data.index.max()}")
         else:
-            print("S3 load returned empty DataFrame.")
+            print("Warning: DataManager returned empty DataFrame.")
+            
     except Exception as e:
-        print(f"Failed to load data from S3: {e}")
-        import traceback
-        traceback.print_exc()
-
-# Try local files if data not loaded yet
-if df_data is None or df_data.empty:
-    local_data_paths = [
-        'data/raw/eurusd_raw.csv',
-        'data/processed/test.csv',
-        'data/processed/train.csv'
-    ]
-    for path in local_data_paths:
-        if os.path.exists(path):
-            if load_data_file(path):
-                print(f"Loaded data from local file: {path}")
-                break
+         print(f"Error loading data via DataManager: {e}")
+         import traceback
+         traceback.print_exc()
+else:
+    print("DataManager not available - cannot load data.")
 
 fe = None
 if load_success:

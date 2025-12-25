@@ -16,41 +16,15 @@ try:
 except Exception as e:
     logger.warning(f"Could not set yf cache: {e}")
 
-def get_latest_date_from_s3(bucket, prefix):
-    """
-    Scans S3 bucket for files matching data_{end}_from_{start}.csv
-    Returns the latest end_date found.
-    """
-    s3 = boto3.client('s3')
-    try:
-        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    except Exception as e:
-        logger.error(f"Error listing objects: {e}")
-        return None
-
-    if 'Contents' not in response:
-        return None
-
-    max_date = None
-    # Regex to extract end_date from "data_{end}_from_{start}.csv"
-    # Example: data_2024-12-19_from_2019-12-19.csv
-    pattern = re.compile(r"data_(\d{4}-\d{2}-\d{2})_from_(\d{4}-\d{2}-\d{2})\.csv")
-
-    for obj in response['Contents']:
-        key = obj['Key']
-        # Remove prefix to get filename
-        filename = os.path.basename(key) 
-        match = pattern.match(filename)
-        if match:
-            end_date_str = match.group(1)
-            try:
-                end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-                if max_date is None or end_date > max_date:
-                    max_date = end_date
-            except ValueError:
-                continue
-    
-    return max_date
+# Import DataManager
+# In Lambda, data_manager.py is at root. Locally, it's in utils/.
+try:
+    from data_manager import DataManager
+except ImportError:
+    import sys
+    # Add project root to path for local execution
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+    from utils.data_manager import DataManager
 
 def lambda_handler(event, context):
     try:
@@ -61,15 +35,33 @@ def lambda_handler(event, context):
         s3_prefix = os.environ.get("S3_PREFIX", "data/raw/")
         
         if not s3_bucket:
+             # Try local .env if not set (for local test)
+             if os.path.exists('.env'):
+                 from dotenv import load_dotenv
+                 load_dotenv()
+                 s3_bucket = os.environ.get("S3_BUCKET")
+        
+        if not s3_bucket:
             raise ValueError("S3_BUCKET environment variable is not set")
 
-        logger.info(f"Starting ingestion. Bucket: {s3_bucket}, Prefix: {s3_prefix}")
+        # Initialize DataManager
+        # Force 'lambda' mode if running in AWS, otherwise 'auto' or 'local'
+        # But since we want to mimic Lambda behavior (partitioned save), we might want explicit mode if testing that logic
+        # For now, let's behave like the environment we are in.
+        mode = 'lambda' if os.environ.get('AWS_LAMBDA_FUNCTION_NAME') else 'auto'
+        
+        dm = DataManager(mode=mode, s3_bucket=s3_bucket, s3_prefix=s3_prefix)
+        logger.info(f"DataManager initialized in {dm.get_environment()} mode")
         
         # 2. Determine Start Date
-        latest_date = get_latest_date_from_s3(s3_bucket, s3_prefix)
-        today = datetime.now().date() # Current date
+        latest_date = dm.get_latest_date()
+        today = datetime.now().date()
         
         if latest_date:
+            # DataManager returns timestamp, convert to date
+            if isinstance(latest_date, datetime):
+                latest_date = latest_date.date()
+                
             start_date = latest_date + timedelta(days=1)
             logger.info(f"Found existing data up to {latest_date}. Start date: {start_date}")
         else:
@@ -78,7 +70,7 @@ def lambda_handler(event, context):
             logger.info(f"No existing data found. Starting backfill from {start_date}")
 
         if start_date >= today:
-            logger.info("Data is already up to date. Nothing to do.")
+            logger.info("Data is already up to date.")
             return {
                 'statusCode': 200,
                 'body': 'Data is up to date'
@@ -86,11 +78,10 @@ def lambda_handler(event, context):
 
         # 3. Fetch Data
         ticker = "EURUSD=X"
-        end_date = datetime.now() # Match src/01_ingest_data.py behavior
+        end_date = datetime.now()
         
         logger.info(f"Fetching {ticker} from {start_date} to {end_date}")
         
-        # Using exact same params as working script, just enabling progress=False for logs
         df = yf.download(ticker, start=start_date, end=end_date, interval="1d", progress=False)
         
         if df.empty:
@@ -100,34 +91,23 @@ def lambda_handler(event, context):
                 'body': 'No new data fetched'
             }
 
-        # 4. Save Logic
-        # Determine actual range fetched
-        if 'Date' in df.columns:
-            # Should not happen as Date is index in yfinance usually
-            df['Date'] = pd.to_datetime(df['Date'])
-            actual_end_date = df['Date'].max().date()
+        # 4. Save Logic via DataManager
+        logger.info(f"Saving {len(df)} rows...")
+        success = dm.save_data(df, metadata={'source': 'lambda_ingest', 'ticker': ticker})
+        
+        if success:
+            logger.info("Save successful.")
+            return {
+                'statusCode': 200,
+                'body': f'Successfully ingested {len(df)} rows'
+            }
         else:
-            actual_end_date = df.index.max().date()
-            
-        csv_filename = f"data_{actual_end_date}_from_{start_date}.csv"
-        tmp_path = f"/tmp/{csv_filename}"
-        s3_key = f"{s3_prefix.rstrip('/')}/{csv_filename}" # Ensure single slash
-        
-        logger.info(f"Saving {len(df)} rows to {tmp_path}")
-        df.to_csv(tmp_path)
-        
-        # 5. Upload to S3
-        logger.info(f"Uploading to s3://{s3_bucket}/{s3_key}")
-        s3 = boto3.client('s3')
-        s3.upload_file(tmp_path, s3_bucket, s3_key)
-        
-        return {
-            'statusCode': 200,
-            'body': f'Successfully uploaded {s3_key}'
-        }
+            raise Exception("DataManager.save_data failed")
 
     except Exception as e:
         logger.error(f"Lambda execution failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             'statusCode': 500,
             'body': f"Error: {str(e)}"
@@ -135,6 +115,10 @@ def lambda_handler(event, context):
 
 if __name__ == "__main__":
     # Local Test
-    from dotenv import load_dotenv
-    load_dotenv()
-    lambda_handler(None, None)
+    if os.path.exists('.env'):
+        from dotenv import load_dotenv
+        load_dotenv()
+    
+    print("🚀 Running Lambda locally...")
+    result = lambda_handler(None, None)
+    print(f"Result: {result}")

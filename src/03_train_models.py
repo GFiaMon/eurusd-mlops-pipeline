@@ -27,10 +27,8 @@ except:
     pass
 
 # Constants
-PROCESSED_DATA_DIR = os.path.join("data", "processed")
-TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "train.csv")
-TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, "test.csv")
-SCALER_PATH = os.path.join(PROCESSED_DATA_DIR, "scaler.pkl")
+# Constants
+EXPERIMENT_NAME = "EURUSD_Experiments"
 EXPERIMENT_NAME = "EURUSD_Experiments"
 
 def eval_metrics(actual, pred):
@@ -52,9 +50,23 @@ def eval_metrics(actual, pred):
 
 def train_models():
     # Load data
-    print("Loading data...")
-    train_df = pd.read_csv(TRAIN_DATA_PATH, index_col=0, parse_dates=True)
-    test_df = pd.read_csv(TEST_DATA_PATH, index_col=0, parse_dates=True)
+    print("Loading data via DataManager...")
+    try:
+        from utils.data_manager import DataManager
+    except ImportError:
+        import sys
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        from utils.data_manager import DataManager
+
+    dm = DataManager(data_type='processed')
+    train_df, test_df, scaler = dm.load_processed()
+    
+    if train_df is None:
+        print("Error: Could not load processed data. Run src/02_preprocess.py first.")
+        return
+
+    # Get local path for scaler (for logging artifact)
+    scaler_path = dm.get_local_path('scaler.pkl')
     
     # Updated Feature List
     feature_cols = ['Return', 'MA_5', 'MA_10', 'MA_20', 'MA_50', 'Return_5d', 'Return_20d', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
@@ -120,7 +132,9 @@ def train_models():
         mlflow.log_metric("directional_accuracy", da)
         
         # Log Scaler as Artifact
-        mlflow.log_artifact(SCALER_PATH, artifact_path="scaler")
+        # Log Scaler as Artifact
+        mlflow.log_artifact(scaler_path, artifact_path="scaler")
+        # mlflow.log_artifact(scaler_path, name="scaler")
         
         # Log Feature Config
         feature_config = {
@@ -132,7 +146,8 @@ def train_models():
         
         # Infer and log signature
         signature = infer_signature(X_train, predictions)
-        mlflow.sklearn.log_model(lr, artifact_path="model", signature=signature)
+        # mlflow.sklearn.log_model(lr, artifact_path="model", signature=signature)
+        mlflow.sklearn.log_model(lr, name="model", signature=signature)
 
     # --- Model B: ARIMA ---
     with mlflow.start_run(run_name="ARIMA") as run:
@@ -211,7 +226,8 @@ def train_models():
         }
         mlflow.log_dict(feature_config, "feature_config.json")
 
-        mlflow.sklearn.log_model(arima_model, artifact_path="model")
+        # mlflow.sklearn.log_model(arima_model, artifact_path="model")
+        mlflow.sklearn.log_model(arima_model, name="model")
 
     # --- Model C: LSTM ---
     with mlflow.start_run(run_name="LSTM") as run:
@@ -354,7 +370,9 @@ def train_models():
         mlflow.log_metric("directional_accuracy", da)
         
         # Log Scaler as Artifact
-        mlflow.log_artifact(SCALER_PATH, artifact_path="scaler")
+        # Log Scaler as Artifact
+        mlflow.log_artifact(scaler_path, artifact_path="scaler")
+        # mlflow.log_artifact(scaler_path, name="scaler")
         
         # Log Feature Config
         feature_config = {
@@ -368,7 +386,8 @@ def train_models():
 
         # Infer and log signature (This resolves the TF warning)
         signature = infer_signature(X_train_seq, predictions)
-        mlflow.tensorflow.log_model(model, artifact_path="model", signature=signature)
+        # mlflow.tensorflow.log_model(model, artifact_path="model", signature=signature)
+        mlflow.tensorflow.log_model(model, name="model", signature=signature)
 
 if __name__ == "__main__":
     train_models()
