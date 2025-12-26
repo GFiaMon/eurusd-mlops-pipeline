@@ -7,11 +7,41 @@
     <title>EUR/USD Prediction</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1000px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #f5f5f5;
+            background-color: #f5f7fa;
+        }
+
+        .navbar {
+            background: white;
+            padding: 15px 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-links a {
+            text-decoration: none;
+            color: #666;
+            margin-left: 20px;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        .nav-links a:hover,
+        .nav-links a.active {
+            color: #007bff;
+        }
+
+        .nav-brand {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #333;
         }
 
         .container {
@@ -25,6 +55,7 @@
             color: #333;
             text-align: center;
             margin-bottom: 5px;
+            margin-top: 0;
         }
 
         .subtitle {
@@ -55,10 +86,11 @@
 
         .prediction-box {
             text-align: center;
-            padding: 30px;
-            background: #f8f9fa;
-            border-radius: 10px;
+            padding: 40px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 15px;
             margin-bottom: 30px;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.02);
         }
 
         .current {
@@ -68,18 +100,20 @@
         }
 
         .predicted {
-            font-size: 48px;
-            font-weight: bold;
-            color: #333;
-            margin: 20px 0;
+            font-size: 56px;
+            font-weight: 800;
+            color: #2c3e50;
+            margin: 15px 0;
+            text-shadow: 1px 1px 0px white;
         }
 
         .change {
             font-size: 24px;
             font-weight: bold;
-            padding: 10px 20px;
-            border-radius: 20px;
+            padding: 10px 25px;
+            border-radius: 30px;
             display: inline-block;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
         }
 
         .change.up {
@@ -102,6 +136,7 @@
             padding: 15px;
             border-radius: 5px;
             margin-bottom: 20px;
+            border-left: 5px solid #007bff;
         }
 
         .stats {
@@ -142,147 +177,158 @@
             color: #333;
         }
 
-        .api-box {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 5px;
-            margin-top: 20px;
-            font-family: monospace;
-        }
-
         .footer {
             text-align: center;
-            margin-top: 30px;
-            color: #666;
-            font-size: 14px;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #999;
+            font-size: 0.9rem;
         }
 
-        button {
+        button.refresh-btn {
             background: #007bff;
             color: white;
             border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
+            padding: 12px 25px;
+            border-radius: 25px;
             cursor: pointer;
             font-size: 16px;
             margin-top: 10px;
+            font-weight: 600;
+            box-shadow: 0 4px 6px rgba(0, 123, 255, 0.2);
+            transition: transform 0.2s, box-shadow 0.2s;
         }
 
-        button:hover {
+        button.refresh-btn:hover {
             background: #0056b3;
+            transform: translateY(-2px);
+        }
+
+        .model-selector {
+            text-align: right;
+            margin-bottom: 15px;
+        }
+
+        select {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #ccd1d9;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            border-left: 3px solid #007bff;
         }
     </style>
 </head>
 
 <body>
+    <div class="navbar">
+        <div class="nav-brand">EUR/USD Predictor</div>
+        <div class="nav-links">
+            <a href="/" class="active">Home</a>
+            <a href="/history">Historical Analysis</a>
+        </div>
+    </div>
+
     <div class="container">
-        <h1>EUR/USD Exchange Rate Predictor</h1>
-        <p class="subtitle">Next-day prediction powered by Machine Learning</p>
+
+        <div class="model-selector">
+            <label for="model-select"><b>Switch Model:</b> </label>
+            <select id="model-select" onchange="changeModel(this.value)">
+                <option value="best" {% if selected_model=='best' %}selected{% endif %}>🏆 Champion Model (Linear Reg)
+                </option>
+                <option value="lstm" {% if selected_model=='lstm' %}selected{% endif %}>🧠 LSTM (Deep Learning)</option>
+                <option value="arima" {% if selected_model=='arima' %}selected{% endif %}>📈 ARIMA (Statistical)
+                </option>
+            </select>
+        </div>
+
+        <h1>EUR/USD exchange Price Predictor</h1>
+        <p class="subtitle">Next-day prediction powered by MLflow Registry</p>
 
         {% if success %}
         <div class="status success">
-            ✅ System Ready - <strong>{{ model_type }}</strong> model loaded
+            ✅ Active: <strong>{{ model_type }}</strong>
         </div>
 
         <div class="prediction-box">
-            <div class="current">
-                Current Price: ${{ "%.4f"|format(current_price) }}
-            </div>
-
-            <div class="predicted">
-                ${{ "%.4f"|format(predicted_price) }}
-            </div>
-
+            <div class="current">Current Market Close: ${{ "%.4f"|format(current_price) }}</div>
+            <div class="predicted">${{ "%.4f"|format(predicted_price) }}</div>
             <div class="change {{ 'up' if change_pct > 0 else 'down' if change_pct < 0 else 'neutral' }}">
                 {{ "%.2f"|format(change_pct|abs) }}%
-                {% if change_pct > 0 %}↑ (UP){% elif change_pct < 0 %}↓ (DOWN){% else %}→ (SIDEWAYS){% endif %}
+                {% if change_pct > 0 %}↑ (UP){% elif change_pct < 0 %}↓ (DOWN){% else %}→ (SIDE){% endif %} </div>
+
+                    <div style="margin-top: 20px; font-size: 0.9rem; color: #555;">
+                        <span title="The raw decimal value predicted by the model">
+                            📅 <strong>Predicted Return:</strong> {{ "%.6f"|format(pred_return) }}
+                        </span>
+                    </div>
+
+                    <p
+                        style="color: #666; margin-top: 15px; font-size: 0.85rem; border-top: 1px solid #ddd; padding-top: 10px;">
+                        <strong>Legend:</strong> The percentage represents the <b>Expected Daily Log-Return</b>.
+                        A positive value suggests the price will likely be higher by tomorrow's close.
+                    </p>
+
+                    <p style="color: #666; margin-top: 5px;">Target Date: <strong>{{ prediction_date }}</strong></p>
             </div>
 
-            <p style="color: #666; margin-top: 15px;">
-                Predicted for <strong>{{ prediction_date }}</strong>
-            </p>
-        </div>
+            <div class="info">Model Type: <strong>{{ model_type }}</strong></div>
 
-        <div class="info">
-            <strong>Model Type:</strong> {{ model_type }}<br>
-            <strong>Method:</strong> Predicting tomorrow's return {{ model_method }}.
-        </div>
-
-        {% if stats %}
-        <div class="stats">
-            <div class="stat">
-                <div class="stat-label">History Window</div>
-                <div class="stat-value">{{ stats.total_days }} days</div>
+            {% if stats %}
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">Last S3 Price</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.current) }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Historical Window</div>
+                    <div class="stat-value">{{ stats.total_days }} days</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Range Min</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.min) }}</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Range Max</div>
+                    <div class="stat-value">${{ "%.4f"|format(stats.max) }}</div>
+                </div>
             </div>
 
-            <div class="stat">
-                <div class="stat-label">Last Price</div>
-                <div class="stat-value">${{ "%.4f"|format(stats.current) }}</div>
+            <div class="details">
+                <h3>Infrastructure Context</h3>
+                <p><strong>Registry Tracking:</strong> Active Connection</p>
+                <p><strong>Serving Instance:</strong> AWS EC2 (Local Test)</p>
+                <p><strong>Server Clock:</strong> {{ current_time }}</p>
+            </div>
+            {% endif %}
+
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="refresh-btn" onclick="refreshPage()">🔄 Sync Data</button>
             </div>
 
-            <div class="stat">
-                <div class="stat-label">Range Min</div>
-                <div class="stat-value">${{ "%.4f"|format(stats.min) }}</div>
+            {% else %}
+            <div class="status error">⚠️ System Offline</div>
+            <div class="details">
+                <h3>Error Details</h3>
+                <p>{{ error }}</p>
+                <button class="refresh-btn" onclick="refreshPage()">Retry Connection</button>
             </div>
-
-            <div class="stat">
-                <div class="stat-label">Range Max</div>
-                <div class="stat-value">${{ "%.4f"|format(stats.max) }}</div>
-            </div>
-        </div>
-
-        <div class="details">
-            <h3>Deployment Details</h3>
-            <p><strong>Actual Data Range:</strong> {{ stats.date_range }}</p>
-            <p><strong>Last Data Update:</strong> {{ stats.last_date }}</p>
-            <p><strong>Model Status:</strong> Champion Serving</p>
-            <p><strong>Server Time:</strong> {{ current_time }}</p>
-        </div>
-        {% endif %}
-
-        <div class="api-box">
-            <h3>API Access</h3>
-            <p><code>GET /api/predict</code> - JSON prediction object</p>
-            <p><code>GET /health</code> - Service health status</p>
-        </div>
-
-        <div style="text-align: center; margin-top: 20px;">
-            <button onclick="refreshPage()">🔄 Refresh Analysis</button>
-        </div>
-
-        {% else %}
-        <div class="status error">
-            ❌ System Error
-        </div>
-
-        <div class="details">
-            <h3>Error Details</h3>
-            <p>{{ error }}</p>
-            <p>Possible causes:</p>
-            <ul>
-                <li>MLflow Tracking Server is unreachable</li>
-                <li>Model alias 'champion' is not set in Registry</li>
-                <li>AWS S3 credentials or bucket access issues</li>
-            </ul>
-            <button onclick="refreshPage()">Attempt Reconnect</button>
-        </div>
-        {% endif %}
+            {% endif %}
 
             <div class="footer">
-                <p>EUR/USD Prediction System | Capstone Project</p>
-                <p>Last updated: {{ current_time }}</p>
+                Developed by Guillermo | Data last updated: {{ stats.last_date if stats else 'Now' }}
             </div>
         </div>
 
         <script>
-            function refreshPage() {
-                location.reload();
+            function refreshPage() { location.reload(); }
+            function changeModel(m) {
+                const u = new URL(window.location);
+                u.searchParams.set('model', m);
+                window.location.href = u.toString();
             }
-
-            // Auto-refresh every 60 seconds
-            setTimeout(() => {
-                location.reload();
-            }, 60000);
         </script>
 </body>
 

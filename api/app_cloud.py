@@ -1,448 +1,180 @@
-# api/app_cloud.py - Enhanced version with S3/MLflow support
+# api/app_cloud.py
 import os
 import sys
 import json
 import numpy as np
 import pandas as pd
-import joblib
 import mlflow
-import mlflow.sklearn
-import mlflow.tensorflow
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
-
-# Optional S3 support
-try:
-    import boto3
-    from botocore.exceptions import ClientError, NoCredentialsError
-    S3_AVAILABLE = True
-except ImportError:
-    S3_AVAILABLE = False
-    print("Warning: boto3 not available - S3 functionality disabled")
-
-# Project root detection
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path: sys.path.append(project_root)
 
-# Try to import DataManager
-# Allows running locally (from project root) or on EC2 (where we copy utils to api/utils)
+# Import components
+try:
+    from api.src.feature_engineer import FeatureEngineer
+    from api.src.model_loader import load_model_from_mlflow
+except ImportError:
+    if os.path.join(project_root, 'api') not in sys.path: sys.path.append(os.path.join(project_root, 'api'))
+    from src.feature_engineer import FeatureEngineer
+    from src.model_loader import load_model_from_mlflow
+
 try:
     from utils.data_manager import DataManager
 except ImportError:
-    try:
-        # Fallback for local execution from api/ directory without symlink
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-        from utils.data_manager import DataManager
-    except ImportError:
-        print("CRITICAL: DataManager not found. Ensure utils/data_manager.py exists.")
-        DataManager = None
+    DataManager = None
 
-# Initialize Flask app
-
-# Initialize Flask app
 app = Flask(__name__, template_folder='frontend')
 
-# Global variables
+# Globals
+current_model_name = "best"
 model = None
 scaler = None
 feature_config = None
 df_data = None
 load_success = False
+fe = None
 
-# Configuration
+# Config
 USE_S3 = os.getenv('USE_S3', 'false').lower() == 'true'
-S3_BUCKET = os.getenv('S3_BUCKET', 'your-bucket-name')
+S3_BUCKET = os.getenv('S3_BUCKET', 'eurusd-ml-models')
 S3_PREFIX = os.getenv('S3_PREFIX', 'data/raw/')
-S3_MODEL_INFO_KEY = os.getenv('S3_MODEL_INFO_KEY', 'models/best_model_info.json') # Key to JSON
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
 
-def download_s3_json(bucket, key):
-    """Download and parse JSON from S3"""
-    if not S3_AVAILABLE:
-        print("boto3 not available")
-        return None
+def initialize_model(model_name="best"):
+    global model, scaler, feature_config, load_success, fe, current_model_name
+    print(f"--- LOADING MODEL: {model_name} ---")
     
-    try:
-        s3 = boto3.client('s3', region_name=AWS_REGION)
-        print(f"Fetching {key} from {bucket}...")
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        data = json.loads(obj['Body'].read().decode('utf-8'))
-        return data
-    except Exception as e:
-        print(f"Error fetching JSON from S3: {e}")
-        return None
-
-def load_from_mlflow():
-    """Load model, scaler, and config from MLflow"""
-    global model, scaler, feature_config
-    
-    # 1. Get Model Info
-    model_info = None
-    if USE_S3:
-        model_info = download_s3_json(S3_BUCKET, S3_MODEL_INFO_KEY)
-    
-    if not model_info:
-        print("Could not retrieve model info from S3. Checking local fallback...")
-        local_info_path = os.path.join(project_root, 'models', 'best_model_info.json')
-        if os.path.exists(local_info_path):
-             with open(local_info_path, 'r') as f:
-                 model_info = json.load(f)
-        else:
-            print("No local model info found.")
-            return False
-
-    print(f"Model Info: {model_info}")
-    model_uri = model_info.get('model_uri')
-    model_type = model_info.get('model_type', 'Unknown')
-    
-    if not model_uri:
-        print("Invalid model info: missing model_uri")
-        return False
-        
-    try:
-        if MLFLOW_TRACKING_URI:
-            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-            print(f"MLflow URI set to: {MLFLOW_TRACKING_URI}")
-        
-        # 2. Load Model - special handling for ARIMA
-        print(f"Loading model from {model_uri}...")
-        
-        # For ARIMA, we need to load the underlying sklearn model directly
-        # because MLflow's pyfunc wrapper doesn't support ARIMA's predict(n_periods=1) interface
-        if 'arima' in model_type.lower():
-            print("Detected ARIMA model - using sklearn loader")
-            model = mlflow.sklearn.load_model(model_uri)
-        else:
-            model = mlflow.pyfunc.load_model(model_uri)
-            
-        print("Model loaded successfully")
-        
-        # 3. Get the run_id from the loaded model's metadata
-        # The model object has metadata that includes the run_id
-        from mlflow.tracking import MlflowClient
-        client = MlflowClient()
-        
-        # Parse model name and version/alias from URI
-        # Format: models:/MODEL_NAME@ALIAS or models:/MODEL_NAME/VERSION
-        model_name = model_info.get('model_name')
-        model_alias = model_info.get('model_alias')
-        
-        if model_alias:
-            # Get model version by alias
-            model_version_info = client.get_model_version_by_alias(model_name, model_alias)
-        else:
-            model_version = model_info.get('model_version')
-            model_version_info = client.get_model_version(model_name, model_version)
-        
-        run_id = model_version_info.run_id
-        print(f"Retrieved run_id from model version: {run_id}")
-        
-        # 4. Load Feature Config
-        try:
-            local_config_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="feature_config.json")
-            with open(local_config_path, 'r') as f:
-                feature_config = json.load(f)
-            print(f"Feature Config loaded: {feature_config}")
-        except Exception as e:
-            print(f"Warning: Could not load feature_config.json: {e}")
-            # Fallback to default config
-            feature_config = {
-                "features": ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5'],
-                "target": "Target",
-                "model_type": model_type,
-                "time_steps": 1,  # Default for LSTM
-                "n_features": 6
-            }
-            print(f"Using fallback feature config: {feature_config}")
-        
-        # 5. Load Scaler
-        try:
-            local_scaler_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="scaler/scaler.pkl")
-            scaler = joblib.load(local_scaler_path)
-            print("Scaler loaded")
-        except Exception as e:
-            print(f"Warning: Could not load scaler: {e}")
-            # Try local fallback
-            local_scaler = os.path.join(project_root, 'data', 'processed', 'scaler.pkl')
-            if os.path.exists(local_scaler):
-                scaler = joblib.load(local_scaler)
-                print("Loaded scaler from local fallback")
-            else:
-                print("No scaler available - predictions may be incorrect")
-        
-        return True
-        
-    except Exception as e:
-        print(f"Error loading from MLflow: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-class FeatureEngineer:
-    def __init__(self, config, scaler):
-        self.config = config
-        self.scaler = scaler
-        self.feature_cols = config.get('features', [])
-        self.model_type = config.get('model_type', 'Unknown')
-        # Default fallback
-        if not self.feature_cols:
-             self.feature_cols = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
-
-    def preprocess(self, df):
-        """
-        Takes raw dataframe with 'Close' (or 'close') and returns:
-        - X input for model
-        - Current price (for ref)
-        """
-        # copy to avoid modifying original
-        data = df.copy()
-        
-        # Normalize columns
-        if 'Close' not in data.columns and 'close' in data.columns:
-            data = data.rename(columns={'close': 'Close'})
-            
-        if 'Close' not in data.columns:
-            raise ValueError("Data must have a 'Close' column")
-            
-        # Calculate Returns
-        data['Return'] = data['Close'].pct_change()
-        
-        # Calculate features dynamically based on what's in config keys
-        # We assume standard naming convention: MA_X, Lag_X
-        # But for now, let's just compute the standard set and select what's needed.
-        # In a robust system, we would parse the feature names.
-
-        # Calculate features dynamically based on what's in self.feature_cols
-        # For simplicity, we assume the standard set is available
-        
-        # Moving Averages
-        for ma in [5, 10, 20, 50]:
-            data[f'MA_{ma}'] = data['Close'].rolling(window=ma).mean()
-            
-        # Shifted Returns (Lags)
-        for lag in [1, 2, 3, 5]:
-            data[f'Lag_{lag}'] = data['Return'].shift(lag)
-
-        # Longer Horizon Returns (Momentum)
-        for r in [5, 20]:
-            data[f'Return_{r}d'] = data['Close'].pct_change(periods=r)
-            
-        # Ensure OHLC are available (renaming if lower case)
-        for col in ['Open', 'High', 'Low']:
-            if col not in data.columns and col.lower() in data.columns:
-                 data = data.rename(columns={col.lower(): col})
-            
-        # Drop NaNs
-        data = data.dropna()
-        
-        # Create unscaled return for specific model types (like ARIMA)
-        data['Return_Unscaled'] = data['Return']
-        
-        if len(data) == 0:
-            return None, None
-            
-        # Select features
-        # Filter feature_cols to only those present in data
-        available_features = [c for c in self.feature_cols if c in data.columns]
-        if not available_features:
-            # Fallback if config features not found
-            available_features = ['Return', 'MA_5', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
-            
-        # Get the LAST row for prediction
-        last_row = data.iloc[[-1]][available_features]
-        current_price = data.iloc[-1]['Close']
-        
-        # Scale - keep as DataFrame for MLflow schema validation
-        if self.scaler:
-             try:
-                 X_scaled = self.scaler.transform(last_row)
-                 # Convert back to DataFrame with column names for MLflow
-                 X = pd.DataFrame(X_scaled, columns=available_features, index=last_row.index)
-             except Exception as e:
-                 print(f"Scaling failed: {e}. Using raw values.")
-                 X = last_row
-        else:
-             X = last_row
-             
-        # Reshape based on model type
-        # LSTM expects (samples, time_steps, features) as numpy array
-        # Linear Regression and others expect DataFrame with named columns
-        if 'lstm' in self.model_type.lower():
-            time_steps = self.config.get('time_steps', 1)
-            # For LSTM, convert to numpy and reshape
-            X = X.values.reshape((1, time_steps, X.shape[1]))
-            
-        return X, current_price
-
-# Helper removed - DataManager handles loading
-
-
-# Initialize
-print("Starting App...")
-load_success = load_from_mlflow()
-
-# Load data using DataManager
-print("Loading historical data...")
-if DataManager:
-    # Auto-detect mode, or force cloud if USE_S3 is set
-    # On EC2, DataManager will auto-detect EC2 environment
-    dm_mode = 'cloud' if USE_S3 else 'auto'
-    
-    dm = DataManager(
-        mode=dm_mode,
-        s3_bucket=S3_BUCKET,
-        s3_prefix=S3_PREFIX
+    m, s, c, success = load_model_from_mlflow(
+        project_root, 
+        use_s3=USE_S3, 
+        s3_bucket=S3_BUCKET, 
+        s3_key=os.getenv('S3_MODEL_INFO_KEY', 'models/best_model_info.json'),
+        tracking_uri=MLFLOW_TRACKING_URI,
+        model_name_override=model_name
     )
     
-    print(f"DataManager initialized (Environment: {dm.get_environment()})")
-    
-    try:
-        # Get latest data (uses local mirror, syncs from S3 if needed)
-        # We don't need force_refresh=True every time, relies on cache for speed
-        df_data = dm.get_latest_data()
-        
-        if not df_data.empty:
-            print(f"Successfully loaded {len(df_data)} rows. Range: {df_data.index.min()} to {df_data.index.max()}")
-        else:
-            print("Warning: DataManager returned empty DataFrame.")
-            
-    except Exception as e:
-         print(f"Error loading data via DataManager: {e}")
-         import traceback
-         traceback.print_exc()
-else:
-    print("DataManager not available - cannot load data.")
+    if success:
+        model, scaler, feature_config, load_success = m, s, c, True
+        fe = FeatureEngineer(feature_config, scaler)
+        current_model_name = model_name
+        print(f"SUCCESS: {model_name} is now active.")
+    else:
+        print(f"ERROR: Could not load {model_name}. System state preserved.")
+        # If this was the initial load, we are still in "failure" state
+        # but if it was a switch, we keep the old model.
 
-fe = None
-if load_success:
-    fe = FeatureEngineer(feature_config, scaler)
+def load_data():
+    global df_data
+    if DataManager:
+        try:
+            dm = DataManager(mode='cloud' if USE_S3 else 'auto', s3_bucket=S3_BUCKET, s3_prefix=S3_PREFIX)
+            df_data = dm.get_latest_data()
+        except Exception as e: print(f"Data Load Error: {e}")
+
+# Init
+initialize_model()
+load_data()
 
 @app.route('/')
 def home():
-    if not load_success:
-        return render_template('index.html', success=False, error="Model not loaded")
+    req_model = request.args.get('model')
+    if req_model and req_model != current_model_name:
+        initialize_model(req_model)
     
+    if not load_success:
+        return render_template('index.html', success=False, error="Model load failed. Check tracker connection.")
     if df_data is None:
-         return render_template('index.html', success=False, error="Data not loaded")
+         load_data()
+         if df_data is None: return render_template('index.html', success=False, error="Historical data not found.")
 
-    # Predict
     try:
         X, current_price = fe.preprocess(df_data)
-        if X is None:
-             return render_template('index.html', success=False, error="Not enough data to generate features")
+        if X is None: return render_template('index.html', success=False, error="Insufficient history (need 60+ days for LSTM).")
              
-        # Prediction - handle ARIMA specially
-        model_type = feature_config.get('model_type', 'Unknown')
-        
-        if 'arima' in model_type.lower():
-            # ARIMA models use predict(n_periods=1) interface
-            pred_return = model.predict(n_periods=1)[0]
+        # Predict
+        m_type = feature_config.get('model_type', 'Unknown')
+        if 'arima' in m_type.lower():
+            pred_val = model.predict(n_periods=1)[0]
         else:
-            # Standard prediction for Linear Regression and LSTM
-            pred_return = model.predict(X)
+            pred_val = model.predict(X)
         
-        # Handle varying output shapes (numpy, pandas, etc.)
-        if hasattr(pred_return, 'values'):
-            pred_return = pred_return.values
-        if isinstance(pred_return, (list, np.ndarray)) and len(np.shape(pred_return)) > 0:
-            pred_return = pred_return.flatten()[0]
-        else:
-            pred_return = float(pred_return)
-            
+        # Parse output
+        if hasattr(pred_val, 'values'): pred_val = pred_val.values
+        if isinstance(pred_val, (list, np.ndarray)) and len(np.shape(pred_val)) > 0:
+            pred_val = pred_val.flatten()[0]
+        
+        pred_return = float(pred_val)
         predicted_price = current_price * (1 + pred_return)
         change_pct = pred_return * 100
         
-        # Model description for UI
-        model_type = feature_config.get('model_type', 'Unknown')
-        if 'lstm' in model_type.lower():
-            model_desc = "LSTM (Deep Learning)"
-            method = f"using the last {feature_config.get('time_steps', 1)} days and {len(feature_config.get('features', []))} features"
-        elif 'arima' in model_type.lower():
-            model_desc = "ARIMA (Statistical)"
-            method = "using historical return patterns"
-        else:
-            model_desc = "Linear Regression"
-            method = f"using {len(feature_config.get('features', []))} technical indicators"
-
-        stats = {
-            'total_days': len(df_data),
-            'current': current_price,
-            'min': df_data['Close'].min(),
-            'max': df_data['Close'].max(),
-            'avg': df_data['Close'].mean(),
-            'last_date': df_data.index[-1].strftime('%Y-%m-%d'),
-            'date_range': f"{df_data.index[0].strftime('%Y-%m-%d')} to {df_data.index[-1].strftime('%Y-%m-%d')}"
-        }
-
         context = {
             'success': True,
             'predicted_price': round(predicted_price, 4),
             'current_price': round(current_price, 4),
             'change_pct': round(change_pct, 4),
-            'model_type': model_desc,
-            'model_method': method,
-            'stats': stats,
+            'pred_return': round(pred_return, 6),
+            'model_type': m_type,
+            'selected_model': current_model_name,
             'prediction_date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
-            'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'stats': {
+                'current': current_price,
+                'total_days': len(df_data),
+                'last_date': df_data.index[-1].strftime('%Y-%m-%d'),
+                'min': df_data['Close'].min(),
+                'max': df_data['Close'].max()
+            }
         }
         return render_template('index.html', **context)
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return render_template('index.html', success=False, error=f"Prediction error: {str(e)}")
+        return render_template('index.html', success=False, error=f"Prediction Error: {str(e)}")
 
-@app.route('/api/predict', methods=['GET', 'POST'])
-def api_predict():
-    if not load_success:
-        return jsonify({'error': 'Model not loaded'}), 500
+@app.route('/history')
+def history():
+    if not load_success or df_data is None: return render_template('index.html', error="Not ready.")
+    try:
+        lookback = 60
+        X_hist, y_actual_returns, prices, dates = fe.preprocess_history(df_data, lookback=lookback)
         
-    # Get data from request or global
-    data = None
-    if request.method == 'POST':
-        json_data = request.get_json()
-        if json_data:
-            data = pd.DataFrame(json_data)
-            
-    if data is None:
-        data = df_data
+        m_type = feature_config.get('model_type', 'Unknown')
         
-    if data is None:
-        return jsonify({'error': 'No data provided'}), 400
+        # Performance comparison: Linear Regression can do batch 2D prediction. 
+        # LSTM/ARIMA require sliding windows or stateful steps, which we skip for the history graph for now.
+        if 'linear' in m_type.lower():
+            try:
+                y_pred = model.predict(X_hist)
+                y_pred = np.array(y_pred).flatten()
+            except:
+                y_pred = np.zeros(len(X_hist))
+        else:
+            # For LSTM/ARIMA, show zeros on the graph to avoid shape errors
+            y_pred = np.zeros(len(X_hist))
         
-    X, current_price = fe.preprocess(data)
-    
-    # Prediction - handle ARIMA specially
-    model_type = feature_config.get('model_type', 'Unknown')
-    
-    if 'arima' in model_type.lower():
-        # ARIMA models use predict(n_periods=1) interface
-        pred_return = model.predict(n_periods=1)[0]
-    else:
-        # Standard prediction for Linear Regression and LSTM
-        pred_return = model.predict(X)
+        mae = np.mean(np.abs(y_actual_returns.values - y_pred))
+        mae_price = np.mean(np.abs(prices.values - (prices.shift(1)*(1+y_pred)).fillna(prices)))
+        mae_pips = mae_price * 10000
+        # Accuracy is random (50%) if y_pred is all zeros, which reflects 'no prediction'
+        acc = np.mean(np.sign(y_actual_returns.values) == np.sign(y_pred))
         
-    if hasattr(pred_return, 'values'):
-         pred_return = pred_return.values
-    if isinstance(pred_return, (list, np.ndarray)) and len(np.shape(pred_return)) > 0:
-        pred_return = pred_return.flatten()[0]
+        plot_json = {
+            'data': [
+                {'x': [d.strftime('%Y-%m-%d') for d in dates], 'y': list(prices.values), 'name': 'Actual', 'line': {'color': '#2ecc71'}},
+                {'x': [d.strftime('%Y-%m-%d') for d in dates], 'y': list((prices.shift(1)*(1+y_pred)).fillna(prices).values), 'name': 'Predicted', 'line': {'color': '#e74c3c', 'dash': 'dot'}}
+            ],
+            'layout': {'title': f'Backtest Analysis ({m_type})', 'autosize': True}
+        }
         
-    predicted_price = float(current_price * (1 + pred_return))
-    
-    return jsonify({
-        'predicted_price': predicted_price,
-        'predicted_return': float(pred_return),
-        'current_price': float(current_price),
-        'model_type': feature_config.get('model_type', 'Unknown')
-    })
-
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy' if load_success else 'unhealthy'})
+        return render_template('history.html', 
+                             metrics={'mae': mae, 'mae_price': mae_price, 'mae_pips': mae_pips, 'accuracy': acc}, 
+                             plot_json=json.dumps(plot_json), 
+                             last_updated=datetime.now().strftime('%Y-%m-%d'), 
+                             lookback=lookback, 
+                             model_type=m_type)
+    except Exception as e: return f"History Error: {e}", 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)), debug=True)

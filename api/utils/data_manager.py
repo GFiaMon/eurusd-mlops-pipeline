@@ -497,6 +497,7 @@ class DataManager:
             
             # Merge and deduplicate
             df = pd.concat(dfs, axis=0)
+            df = self._clean_columns(df) # Clean columns on load
             df = df.sort_index()
             df = df[~df.index.duplicated(keep='last')]
             
@@ -506,6 +507,36 @@ class DataManager:
             logger.error(f"Failed to load from S3: {e}")
             return pd.DataFrame()
     
+    def _clean_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean DataFrame columns to handle Tuple-Strings and Duplicates.
+        Fixes the issue where MultiIndex columns are saved as "('Close', 'EURUSD=X')".
+        """
+        if df.empty:
+            return df
+            
+        # 1. Parse Tuple-Strings
+        new_cols = []
+        for c in df.columns:
+            c_str = str(c)
+            # Check for stringified tuple: "('Close', '...')"
+            if (c_str.startswith("('") or c_str.startswith('("')) and "," in c_str:
+                try:
+                    # Clean: "('Close', ...)" -> "Close"
+                    clean = c_str.strip("()").replace("'", "").replace('"', "").split(",")[0].strip()
+                    new_cols.append(clean)
+                except:
+                    new_cols.append(c)
+            else:
+                new_cols.append(c)
+        
+        df.columns = new_cols
+        
+        # 2. Deduplicate columns (Keep first occurrence)
+        df = df.loc[:, ~df.columns.duplicated()]
+        
+        return df
+
     def _load_from_local(self) -> pd.DataFrame:
         """Load data from local mirror."""
         # For raw data, look for merged file or individual files
@@ -532,6 +563,7 @@ class DataManager:
             if os.path.exists(merged_file):
                 try:
                     df = load_safe(merged_file)
+                    df = self._clean_columns(df)
                     logger.info(f"Loaded {len(df)} rows from {merged_file}")
                     return df
                 except Exception as e:
@@ -542,6 +574,7 @@ class DataManager:
             if os.path.exists(legacy_file):
                 try:
                     df = load_safe(legacy_file)
+                    df = self._clean_columns(df)
                     logger.info(f"Loaded {len(df)} rows from {legacy_file}")
                     return df
                 except Exception as e:
@@ -560,6 +593,7 @@ class DataManager:
                 
                 if dfs:
                     df = pd.concat(dfs, axis=0)
+                    df = self._clean_columns(df)
                     df = df.sort_index()
                     df = df[~df.index.duplicated(keep='last')]
                     logger.info(f"Loaded {len(df)} rows from {len(dfs)} partitioned files")
@@ -627,11 +661,65 @@ class DataManager:
             self.s3_client.upload_file(local_path, self.s3_bucket, s3_key)
             
             logger.info(f"Saved to S3: s3://{self.s3_bucket}/{s3_key}")
+            
+            # --- SAFE CLEANUP LOGIC ---
+            # Remove any existing files that are fully contained within this new file's range.
+            # This prevents redundancy (e.g., deleting a "2024" file if we just uploaded "2020-2025").
+            try:
+                self._cleanup_redundant_files(start_date, end_date, filename)
+            except Exception as e:
+                logger.warning(f"Cleanup failed (non-critical): {e}")
+            # --------------------------
+            
+            # Cleanup local temp file after upload to avoid clutter
+            # We only keep 'eurusd_latest.csv' locally.
+            try:
+                os.remove(local_path)
+                logger.debug(f"Removed temporary local file: {local_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temp file {local_path}: {e}")
+                
             return True
             
         except Exception as e:
             logger.error(f"Failed to save to S3: {e}")
             return False
+
+    def _cleanup_redundant_files(self, new_start_str: str, new_end_str: str, new_filename: str):
+        """
+        Delete S3 files that are fully superseded by the new upload.
+        Only deletes if Old_Range is INSIDE New_Range.
+        """
+        new_start = datetime.strptime(new_start_str, "%Y-%m-%d")
+        new_end = datetime.strptime(new_end_str, "%Y-%m-%d")
+        
+        paginator = self.s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=self.s3_bucket, Prefix=self.s3_prefix)
+        
+        pattern = re.compile(r"data_(\d{4}-\d{2}-\d{2})_from_(\d{4}-\d{2}-\d{2})\.csv")
+        
+        for page in pages:
+            if 'Contents' not in page:
+                continue
+                
+            for obj in page['Contents']:
+                key = obj['Key']
+                filename = os.path.basename(key)
+                
+                # Skip self
+                if filename == new_filename:
+                    continue
+                    
+                match = pattern.match(filename)
+                if match:
+                    old_end = datetime.strptime(match.group(1), "%Y-%m-%d")
+                    old_start = datetime.strptime(match.group(2), "%Y-%m-%d")
+                    
+                    # STRICT CONTAINMENT CHECK
+                    # If the old file is fully inside the new file's range, it is redundant.
+                    if old_start >= new_start and old_end <= new_end:
+                        logger.info(f"♻️  Compacting redundancy: Deleting {filename} (covered by {new_filename})")
+                        self.s3_client.delete_object(Bucket=self.s3_bucket, Key=key)
     
     def _is_local_stale(self, max_age_hours: int = 24) -> bool:
         """Check if local mirror is stale."""
@@ -646,33 +734,49 @@ class DataManager:
         age = datetime.now().timestamp() - latest_mtime
         
         return age > (max_age_hours * 3600)
+
+
     
     def _get_latest_date_from_s3(self) -> Optional[datetime]:
-        """Get the latest date from S3 files."""
+        """
+        Get the latest date from S3 files.
+        Raises exception if S3 access fails, to prevent accidental backfills.
+        """
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.s3_bucket,
-                Prefix=self.s3_prefix
-            )
+
+            logger.info(f"Listing objects in s3://{self.s3_bucket}/{self.s3_prefix} (Pagination Enabled)")
             
-            if 'Contents' not in response:
-                return None
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.s3_bucket, Prefix=self.s3_prefix)
             
             max_date = None
             pattern = re.compile(r"data_(\d{4}-\d{2}-\d{2})_from_(\d{4}-\d{2}-\d{2})\.csv")
             
-            for obj in response['Contents']:
-                key = obj['Key']
-                filename = os.path.basename(key)
-                match = pattern.match(filename)
-                if match:
-                    end_date_str = match.group(1)
-                    end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
-                    if max_date is None or end_date > max_date:
-                        max_date = end_date
+            file_count = 0
+            match_count = 0
             
+            for page in pages:
+                if 'Contents' not in page:
+                    continue
+                    
+                for obj in page['Contents']:
+                    file_count += 1
+                    key = obj['Key']
+                    filename = os.path.basename(key)
+                    
+                    match = pattern.match(filename)
+                    if match:
+                        match_count += 1
+                        end_date_str = match.group(1)
+                        end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+                        if max_date is None or end_date > max_date:
+                            max_date = end_date
+            
+            logger.info(f"Scanned {file_count} files, found {match_count} valid data files. Latest date: {max_date}")
             return max_date
             
         except Exception as e:
             logger.error(f"Error getting latest date from S3: {e}")
-            return None
+            # CRITICAL: Do not return None here, as it triggers backfill.
+            # Re-raise to stop execution.
+            raise e
