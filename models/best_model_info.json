@@ -2,7 +2,7 @@
     "run_id": "3a13c2d2ff5f4458abbca9de9e149df9",
     "model_type": "LinearRegression",
     "model_name": "EURUSD_LinearRegression",
-    "model_version": "6",
+    "model_version": "7",
     "model_alias": "champion",
     "model_uri": "models:/EURUSD_LinearRegression@champion",
     "metrics": {

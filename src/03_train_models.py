@@ -69,20 +69,23 @@ def train_models():
     scaler_path = dm.get_local_path('scaler.pkl')
     
     # Updated Feature List
+    # Superset: All available features. Models will select what they need.
     feature_cols = ['Return', 'MA_5', 'MA_10', 'MA_20', 'MA_50', 'Return_5d', 'Return_20d', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
-    # Add OHLC columns if they exist in the dataframe
     potential_cols = ['Open', 'High', 'Low', 'Close']
     for col in potential_cols:
         if col in train_df.columns:
             feature_cols.append(col)
             
-    print(f"Features used for training: {feature_cols}")
+    print(f"Features available: {feature_cols}")
     target_col = 'Target'
     
-    X_train = train_df[feature_cols]
-    y_train = train_df[target_col]
-    X_test = test_df[feature_cols]
-    y_test = test_df[target_col]
+    # --- FEATURE SUBSETS ---
+    # Linear Regression: Optimized features only (Selected from Superset)
+    FEATURES_LINREG = ['Return', 'MA_50', 'Return_20d', 'Lag_2', 'Lag_3']
+    # LSTM: Optimized + OHLC
+    FEATURES_LSTM = ['Return', 'MA_50', 'Return_20d', 'Lag_2', 'Lag_3', 'Open', 'High', 'Low', 'Close']
+    
+    # -----------------------
     
     # Setup MLflow
     # Note: connect to local MLflow (./mlruns) by default.
@@ -112,11 +115,21 @@ def train_models():
         mlflow.set_tag("model_type", "LinearRegression")
         
         print("Training Linear Regression...")
-        lr = LinearRegression()
-        lr.fit(X_train, y_train)
         
-        predictions = lr.predict(X_test)
-        rmse, mae, da = eval_metrics(y_test, predictions)
+        # STRICT SUBSET for LinReg
+        # Filter columns that exist
+        linreg_cols = [c for c in FEATURES_LINREG if c in train_df.columns]
+        
+        X_train_lr = train_df[linreg_cols]
+        y_train_lr = train_df[target_col]
+        X_test_lr = test_df[linreg_cols]
+        y_test_lr = test_df[target_col]
+        
+        lr = LinearRegression()
+        lr.fit(X_train_lr, y_train_lr)
+        
+        predictions = lr.predict(X_test_lr)
+        rmse, mae, da = eval_metrics(y_test_lr, predictions)
         
         print(f"  RMSE: {rmse}")
         print(f"  MAE: {mae}")
@@ -124,7 +137,7 @@ def train_models():
         
         # Log Params
         mlflow.log_params(lr.get_params())
-        mlflow.log_param("features", feature_cols)
+        mlflow.log_param("features", linreg_cols)
         
         # Log Metrics
         mlflow.log_metric("rmse", rmse)
@@ -138,14 +151,14 @@ def train_models():
         
         # Log Feature Config
         feature_config = {
-            "features": feature_cols,
+            "features": linreg_cols,
             "target": target_col,
             "model_type": "LinearRegression"
         }
         mlflow.log_dict(feature_config, "feature_config.json")
         
         # Infer and log signature
-        signature = infer_signature(X_train, predictions)
+        signature = infer_signature(X_train_lr, predictions)
         # mlflow.sklearn.log_model(lr, artifact_path="model", signature=signature)
         mlflow.sklearn.log_model(lr, name="model", signature=signature)
 
@@ -204,7 +217,8 @@ def train_models():
             
         predictions = np.array(predictions)
         
-        rmse, mae, da = eval_metrics(y_test, predictions)
+        y_test_arima = test_df[target_col]
+        rmse, mae, da = eval_metrics(y_test_arima, predictions)
         
         print(f"  RMSE: {rmse}")
         print(f"  MAE: {mae}")
@@ -236,6 +250,15 @@ def train_models():
         
         print("Training LSTM...")
         
+        # STRICT SUBSET for LSTM
+        lstm_cols = [c for c in FEATURES_LSTM if c in train_df.columns]
+        print(f"  LSTM Features: {lstm_cols}")
+        
+        X_train_lstm = train_df[lstm_cols]
+        y_train_lstm = train_df[target_col]
+        X_test_lstm = test_df[lstm_cols]
+        y_test_lstm = test_df[target_col]
+        
         # --- NEW LSTM IMPLEMENTATION (Sliding Window & Deeper Arch) ---
         
         # Helper to create sequences
@@ -246,10 +269,6 @@ def train_models():
             # Alignment:
             # Inputs: rows [i : i+time_steps] (0..59)
             # Target: row [i+time_steps-1] (59)
-            # Wait, row 59 has Target_59 which is Return_{60}.
-            # We want to predict Return_{60} using Features_{0}..Features_{59}.
-            # So X = data[i: i+time_steps]
-            # y = target[i+time_steps-1]
             for i in range(len(data) - time_steps + 1):
                 X.append(data[i:(i + time_steps)])
                 val = target[i + time_steps - 1]
@@ -258,12 +277,12 @@ def train_models():
 
         # Config
         time_steps = 60
-        n_features = X_train.shape[1]
+        n_features = len(lstm_cols)
         
         # Generate Sequences
         # Note: We must use .values
-        X_train_seq, y_train_seq = create_sequences(X_train.values, y_train.values, time_steps)
-        X_test_seq, y_test_seq = create_sequences(X_test.values, y_test.values, time_steps)
+        X_train_seq, y_train_seq = create_sequences(X_train_lstm.values, y_train_lstm.values, time_steps)
+        X_test_seq, y_test_seq = create_sequences(X_test_lstm.values, y_test_lstm.values, time_steps)
         
         print(f"  LSTM Input Shape: {X_train_seq.shape}")
         
@@ -340,7 +359,7 @@ def train_models():
         print(f"  Directional Accuracy: {da}")
         """
         # -------------------------------------------------------------
-        
+
         # Log Architecture Details Modularly
         mlflow.log_param("input_shape", f"[{X_train_seq.shape[0]}, {time_steps}, {n_features}]")
         mlflow.log_param("time_steps", time_steps)
@@ -376,7 +395,7 @@ def train_models():
         
         # Log Feature Config
         feature_config = {
-            "features": feature_cols,
+            "features": lstm_cols,
             "target": target_col,
             "time_steps": time_steps,
             "n_features": n_features,

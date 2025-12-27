@@ -50,20 +50,19 @@ def preprocess_data():
     df['Return'] = df['Close'].pct_change()
     
     # Moving Averages
-    # Moving Averages
-    # Filtered based on feature importance: Keeping MA_50
-    for ma in [50]:
+    # Superset: Generating all potentially useful MAs (Important one is MA_50 based on feature importance)
+    for ma in [5, 10, 20, 50]:
         df[f'MA_{ma}'] = df['Close'].rolling(window=ma).mean()
         
     # Lagged Returns (1 day is 'Return')
-    # Returns over longer periods (Momentum)
-    # Filtered: Keeping Return_20d, removing Return_5d
-    for r in [20]:
+    # Returns over longer periods (Momentum) (Important one is Return_20d based on feature importance)
+    for r in [5, 20]:
         df[f'Return_{r}d'] = df['Close'].pct_change(periods=r)
 
     # Lagged Features for 1-step prediction (Standard Regression features)
-    # Filtered: Removing Lag_1, Lag_5 (weak importance). Keeping Lag_2, Lag_3.
-    for lag in [2, 3]:
+    # Important one is Lag_2, Lag_3 based on feature importance. Filtered: Lag_1, Lag_5 (weak importance).
+
+    for lag in [1, 2, 3, 5]:
         df[f'Lag_{lag}'] = df['Return'].shift(lag)
         
     # Drop NaNs created by rolling and shifting (max rolling is 50)
@@ -99,7 +98,6 @@ def preprocess_data():
     print("⚖️  Scaling data...")
     # Update feature list to include OHLC and new features
     # Note: OHLC are in 'df' if read correctly. 
-    # Let's verify we have them. If not, we might need to handle it.
     # 'Open', 'High', 'Low' are available from yfinance download.
 
     # Determine columns present
@@ -108,16 +106,15 @@ def preprocess_data():
     if missing_cols:
          print(f"⚠️  Warning: Columns {missing_cols} missing. Using available.")
          
-    # Construct feature list
-    # Construct feature list (Filtered)
-    feature_cols = ['Return', 'MA_50', 'Return_20d', 'Lag_2', 'Lag_3']
+    # Construct feature list (Superset) (Important features are Return, MA_50, Return_20d, Lag_2, Lag_3)
+    feature_cols = ['Return', 'MA_5', 'MA_10', 'MA_20', 'MA_50', 'Return_5d', 'Return_20d', 'Lag_1', 'Lag_2', 'Lag_3', 'Lag_5']
     
     # Add OHLC to features if present (scaled)
     for col in essential_cols:
         if col in df.columns:
             feature_cols.append(col)
             
-    print(f"Features: {feature_cols}")
+    print(f"Features Generated & Scaled: {feature_cols}")
 
     scaler = MinMaxScaler()
     train_df[feature_cols] = scaler.fit_transform(train_df[feature_cols])
@@ -142,7 +139,6 @@ def preprocess_data():
             print("params: Local only (S3 not configured or offline).")
     else:
         print("❌ Failed to save processed data.")
-
 if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
