@@ -86,7 +86,7 @@ echo "📋 Syncing DataManager to Lambda package..."
 # Copy to source dir first so it's included in zip later if needed, 
 # OR copy directly to build package. 
 # Better strategy: Copy to source dir (gitignored) so structure is valid locally too.
-cp utils/data_manager.py aws_lambda/ingest/data_manager.py
+cp utils/data_manager.py aws_lambda/data_ingestion/data_manager.py
 echo "✅ DataManager synced"
 
 # Define local path for mounting
@@ -99,9 +99,9 @@ docker run --platform linux/amd64 --rm -v "$LOCAL_PATH":/var/task public.ecr.aws
     /bin/sh -c "pip install \"yfinance==0.2.66\" \"peewee==3.18.3\" \"pandas==2.1.4\" \"numpy==1.24.3\" \"lxml==6.0.2\" \"requests==2.32.5\" -t /var/task --upgrade"
 
 # Copy function code (after build to avoid it being overwritten or needing mount)
-cp aws_lambda/ingest/lambda_function.py build_package/
+cp aws_lambda/data_ingestion/lambda_function_ingest.py build_package/
 # Copy DataManager into build package
-cp aws_lambda/ingest/data_manager.py build_package/
+cp aws_lambda/data_ingestion/data_manager.py build_package/
 
 # Zip
 cd build_package
@@ -131,7 +131,7 @@ else
     aws lambda create-function \
         --function-name $FUNCTION_NAME \
         --code S3Bucket=$S3_BUCKET,S3Key=$DEPLOY_KEY \
-        --handler lambda_function.lambda_handler \
+        --handler lambda_function_ingest.lambda_handler \
         --runtime python3.11 \
         --role $ROLE_ARN \
         --timeout 300 \

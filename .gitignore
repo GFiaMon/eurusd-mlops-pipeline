@@ -61,8 +61,8 @@ mlruns/
 mlflow.db
 
 # Environment
-.env
-.env.local
+# .env
+# .env.local
 
 # AWS credentials
 *.pem

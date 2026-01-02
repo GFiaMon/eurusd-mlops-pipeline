@@ -1,0 +1,38 @@
+# Dockerfile for Model Retraining
+# 🐳 EUR/USD Predictor - Retraining Worker
+# This image packages all dependencies to ensure fast, reliable retraining.
+
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    WORK_DIR=/app
+
+WORKDIR $WORK_DIR
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies separately to cache the layer
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    sed -i '/tensorflow-metal/d' requirements.txt && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application
+COPY . .
+
+# Ensure scripts are executable
+RUN chmod +x scripts/mlops_utils/retrain_champions.py
+
+# Create a shell script to run the retraining
+RUN echo '#!/bin/bash\npython scripts/mlops_utils/retrain_champions.py' > run_retrain.sh && \
+    chmod +x run_retrain.sh
+
+# The script handles the shutdown via EC2 termination if run as a standalone worker,
+# but for Docker, we just run the training.
+CMD ["./run_retrain.sh"]
