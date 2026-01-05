@@ -85,6 +85,9 @@ Run these commands only during initial setup or if you need to fix a broken infr
 # Check status
 ./scripts/mlops_utils/monitor_retrain.sh status
 
+# See recent logs
+./scripts/mlops_utils/monitor_retrain.sh logs
+
 # Tail logs live (if running)
 ./scripts/mlops_utils/monitor_retrain.sh tail
 ```

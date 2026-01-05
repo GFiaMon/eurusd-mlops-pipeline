@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path: sys.path.append(project_root)
+if project_root not in sys.path: sys.path.insert(0, project_root)
 
 # Import components
 try:
@@ -37,6 +37,7 @@ feature_config = None
 df_data = None
 load_success = False
 fe = None
+last_load_time = None
 
 # Config
 USE_S3 = os.getenv('USE_S3', 'false').lower() == 'true'
@@ -67,12 +68,32 @@ def initialize_model(model_name="best"):
         # If this was the initial load, we are still in "failure" state
         # but if it was a switch, we keep the old model.
 
-def load_data():
-    global df_data
+def load_data(force=False):
+    global df_data, last_load_time
     if DataManager:
         try:
+            # Check TTL - Daily update (UTC)
+            is_stale = False
+            if last_load_time:
+                # Reload if current UTC day is different from last load UTC day
+                if datetime.utcnow().date() > last_load_time.date():
+                    is_stale = True
+                    print("New UTC day detected. Reloading data...")
+
+            if df_data is not None and not force and not is_stale:
+                return
+
             dm = DataManager(mode='cloud' if USE_S3 else 'auto', s3_bucket=S3_BUCKET, s3_prefix=S3_PREFIX)
-            df_data = dm.get_latest_data()
+            new_data = dm.get_latest_data()
+            
+            if new_data is not None and not new_data.empty:
+                df_data = new_data
+                # Store time in UTC to match the check above
+                last_load_time = datetime.utcnow()
+                print(f"Data Loaded: {len(df_data)} rows. Last date: {df_data.index[-1]}")
+            else:
+                 print("Warning: Reload attempt returned no data. Keeping old data.")
+                 
         except Exception as e: print(f"Data Load Error: {e}")
 
 # Init
@@ -81,6 +102,9 @@ load_data()
 
 @app.route('/')
 def home():
+    # Ensure data is fresh
+    load_data()
+    
     req_model = request.args.get('model')
     if req_model and req_model != current_model_name:
         initialize_model(req_model)
@@ -127,7 +151,8 @@ def home():
                 'last_date': df_data.index[-1].strftime('%Y-%m-%d'),
                 'min': df_data['Close'].min(),
                 'max': df_data['Close'].max()
-            }
+            },
+            'data_last_date': df_data.index[-1].strftime('%Y-%m-%d') # For footer
         }
         return render_template('index.html', **context)
     except Exception as e:
@@ -135,9 +160,21 @@ def home():
 
 @app.route('/history')
 def history():
+    # Model switching logic
+    req_model = request.args.get('model')
+    if req_model and req_model != current_model_name:
+        initialize_model(req_model)
+
+    # Ensure data is fresh
+    load_data()
+    
     if not load_success or df_data is None: return render_template('index.html', error="Not ready.")
     try:
         lookback = 60
+        # Check if we have enough data for lookback + window
+        if len(df_data) < lookback + 10:
+             return f"Not enough data history. Has {len(df_data)} rows.", 400
+
         X_hist, y_actual_returns, prices, dates = fe.preprocess_history(df_data, lookback=lookback)
         
         m_type = feature_config.get('model_type', 'Unknown')
@@ -171,9 +208,10 @@ def history():
         return render_template('history.html', 
                              metrics={'mae': mae, 'mae_price': mae_price, 'mae_pips': mae_pips, 'accuracy': acc}, 
                              plot_json=json.dumps(plot_json), 
-                             last_updated=datetime.now().strftime('%Y-%m-%d'), 
+                             last_updated=df_data.index[-1].strftime('%Y-%m-%d'), # Use data date
                              lookback=lookback, 
-                             model_type=m_type)
+                             model_type=m_type,
+                             current_model=current_model_name) # Pass current model name
     except Exception as e: return f"History Error: {e}", 500
 
 if __name__ == '__main__':

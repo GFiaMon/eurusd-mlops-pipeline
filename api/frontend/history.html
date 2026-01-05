@@ -116,6 +116,22 @@
         <h1>Model Performance History</h1>
         <p>Analysis of model predictions vs actual market movements over the last {{ lookback }} days.</p>
 
+        <div style="margin-bottom: 20px; background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #ddd;">
+            <form action="/history" method="get" style="display: flex; align-items: center; gap: 10px;">
+                <label for="model-select" style="font-weight: bold;">Select Model:</label>
+                <select name="model" id="model-select" onchange="this.form.submit()"
+                    style="padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+                    <option value="best" {% if current_model=='best' %}selected{% endif %}>Champion (Best Performance)
+                    </option>
+                    <option value="challenger" {% if current_model=='challenger' %}selected{% endif %}>Challenger
+                    </option>
+                    <option value="candidate" {% if current_model=='candidate' %}selected{% endif %}>Candidate
+                        (Training)</option>
+                </select>
+                <span style="font-size: 0.9em; color: #666;">Current Type: <strong>{{ model_type }}</strong></span>
+            </form>
+        </div>
+
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-label">Avg Error (MSE Returns)</div>
