@@ -191,23 +191,22 @@ class DataManager:
         """
         logger.info(f"Getting latest {self.data_type} data (mode={self.mode}, force={force_refresh})")
         
-        # Lambda/EC2: Read directly from S3
-        if self.mode in ['lambda', 'ec2'] and self.is_cloud_available():
+        # Cloud-First Strategy: Always load from S3 if available
+        if self.is_cloud_available():
+            logger.info("Cloud available: Loading directly from S3 (Cloud-First)")
             df = self._load_from_s3()
-        
-        # Cloud/Local: Use local mirror with optional sync
-        elif self.mode in ['cloud', 'local']:
-            # Sync from S3 if available and (force or stale/missing)
-            if self.is_cloud_available() and (force_refresh or self._is_local_stale()):
-                logger.info("Syncing from S3...")
-                self.sync_from_s3(force=force_refresh)
             
-            # Load from local mirror
-            df = self._load_from_local()
+            # Optional: Start background sync to update local mirror (best effort)
+            # We don't wait for this or use it for the return value
+            try:
+                if self.mode != 'lambda':  # Lambda has fleeting storage
+                    self.sync_from_s3()
+            except Exception as e:
+                logger.warning(f"Background sync failed: {e}")
         
-        # Offline: Local only
+        # Fallback: Local Mirror
         else:
-            logger.info("Offline mode: using local mirror only")
+            logger.info(f"S3 unavailable (mode={self.mode}): Loading from local mirror")
             df = self._load_from_local()
         
         # Filter by lookback_days if specified
@@ -482,15 +481,36 @@ class DataManager:
             for obj in response['Contents']:
                 key = obj['Key']
                 if key.endswith('.csv'):
-                    # Download and read
+                    # Download file content
                     obj_data = self.s3_client.get_object(Bucket=self.s3_bucket, Key=key)
-                    df_temp = pd.read_csv(
-                        obj_data['Body'],
-                        index_col=0,
-                        parse_dates=True,
-                        skiprows=[1, 2]  # Skip yfinance metadata
-                    )
-                    dfs.append(df_temp)
+                    content = obj_data['Body'].read().decode('utf-8')
+                    
+                    # Detect header format by checking first few lines
+                    lines = content.split('\n')[:3]
+                    has_yfinance_header = len(lines) >= 2 and 'Ticker' in lines[1]
+                    
+                    # Read with appropriate skiprows
+                    from io import StringIO
+                    if has_yfinance_header:
+                        # yfinance format: skip metadata rows
+                        df_temp = pd.read_csv(
+                            StringIO(content),
+                            index_col=0,
+                            parse_dates=True,
+                            skiprows=[1, 2]
+                        )
+                        logger.debug(f"Loaded {key} with yfinance header (skiprows=[1,2])")
+                    else:
+                        # Simple format: no skiprows
+                        df_temp = pd.read_csv(
+                            StringIO(content),
+                            index_col=0,
+                            parse_dates=True
+                        )
+                        logger.debug(f"Loaded {key} with simple header (no skiprows)")
+                    
+                    if not df_temp.empty:
+                        dfs.append(df_temp)
             
             if not dfs:
                 return pd.DataFrame()
@@ -501,6 +521,7 @@ class DataManager:
             df = df.sort_index()
             df = df[~df.index.duplicated(keep='last')]
             
+            logger.info(f"Loaded {len(df)} rows from {len(dfs)} S3 files")
             return df
             
         except Exception as e:
@@ -558,46 +579,46 @@ class DataManager:
                     logger.warning(f"Error reading {filepath}: {e}")
                     raise e
 
-            # Try merged file first
+            dfs = []
+            
+            # 1. Load merged file if exists
             merged_file = self.get_local_path('eurusd_latest.csv')
             if os.path.exists(merged_file):
                 try:
-                    df = load_safe(merged_file)
-                    df = self._clean_columns(df)
-                    logger.info(f"Loaded {len(df)} rows from {merged_file}")
-                    return df
+                    df_merged = load_safe(merged_file)
+                    dfs.append(df_merged)
+                    logger.debug(f"Loaded merged file: {merged_file}")
                 except Exception as e:
                     logger.warning(f"Failed to load {merged_file}: {e}")
-            
-            # Try legacy file
+
+            # 2. Load legacy file if exists (optional fallback)
             legacy_file = self.get_local_path('eurusd_raw.csv')
-            if os.path.exists(legacy_file):
-                try:
-                    df = load_safe(legacy_file)
-                    df = self._clean_columns(df)
-                    logger.info(f"Loaded {len(df)} rows from {legacy_file}")
-                    return df
-                except Exception as e:
+            if os.path.exists(legacy_file) and not dfs:
+                 try:
+                    df_legacy = load_safe(legacy_file)
+                    dfs.append(df_legacy)
+                 except Exception as e:
                     logger.warning(f"Failed to load {legacy_file}: {e}")
-            
-            # Try partitioned files
+
+            # 3. Load ALL partitioned files (daily updates)
+            # This is critical: we must load these even if merged file exists
             csv_files = list(Path(self.local_dir).glob('data_*.csv'))
             if csv_files:
-                dfs = []
                 for csv_file in csv_files:
                     try:
                         df_temp = load_safe(csv_file)
                         dfs.append(df_temp)
                     except Exception as e:
                         logger.warning(f"Failed to load {csv_file}: {e}")
-                
-                if dfs:
-                    df = pd.concat(dfs, axis=0)
-                    df = self._clean_columns(df)
-                    df = df.sort_index()
-                    df = df[~df.index.duplicated(keep='last')]
-                    logger.info(f"Loaded {len(df)} rows from {len(dfs)} partitioned files")
-                    return df
+            
+            # 4. Merge everything
+            if dfs:
+                df = pd.concat(dfs, axis=0)
+                df = self._clean_columns(df)
+                df = df.sort_index()
+                df = df[~df.index.duplicated(keep='last')]
+                logger.info(f"Loaded {len(df)} rows from {len(dfs)} sources (merged + partitions)")
+                return df
         
         logger.warning(f"No data found in {self.local_dir}/")
         return pd.DataFrame()

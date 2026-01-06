@@ -1,4 +1,3 @@
 {
-  "source": "local_ingest",
-  "ticker": "EURUSD=X"
+  "source": "notebook_ingest"
 }

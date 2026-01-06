@@ -481,15 +481,36 @@ class DataManager:
             for obj in response['Contents']:
                 key = obj['Key']
                 if key.endswith('.csv'):
-                    # Download and read
+                    # Download file content
                     obj_data = self.s3_client.get_object(Bucket=self.s3_bucket, Key=key)
-                    df_temp = pd.read_csv(
-                        obj_data['Body'],
-                        index_col=0,
-                        parse_dates=True,
-                        skiprows=[1, 2]  # Skip yfinance metadata
-                    )
-                    dfs.append(df_temp)
+                    content = obj_data['Body'].read().decode('utf-8')
+                    
+                    # Detect header format by checking first few lines
+                    lines = content.split('\n')[:3]
+                    has_yfinance_header = len(lines) >= 2 and 'Ticker' in lines[1]
+                    
+                    # Read with appropriate skiprows
+                    from io import StringIO
+                    if has_yfinance_header:
+                        # yfinance format: skip metadata rows
+                        df_temp = pd.read_csv(
+                            StringIO(content),
+                            index_col=0,
+                            parse_dates=True,
+                            skiprows=[1, 2]
+                        )
+                        logger.debug(f"Loaded {key} with yfinance header (skiprows=[1,2])")
+                    else:
+                        # Simple format: no skiprows
+                        df_temp = pd.read_csv(
+                            StringIO(content),
+                            index_col=0,
+                            parse_dates=True
+                        )
+                        logger.debug(f"Loaded {key} with simple header (no skiprows)")
+                    
+                    if not df_temp.empty:
+                        dfs.append(df_temp)
             
             if not dfs:
                 return pd.DataFrame()
@@ -500,6 +521,7 @@ class DataManager:
             df = df.sort_index()
             df = df[~df.index.duplicated(keep='last')]
             
+            logger.info(f"Loaded {len(df)} rows from {len(dfs)} S3 files")
             return df
             
         except Exception as e:
