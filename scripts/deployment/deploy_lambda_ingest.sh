@@ -63,7 +63,10 @@ cat > role-policy.json <<EOF
                 "s3:PutObject",
                 "s3:GetObject"
             ],
-            "Resource": "arn:aws:s3:::$S3_BUCKET/$S3_PREFIX*"
+            "Resource": [
+                "arn:aws:s3:::$S3_BUCKET/$S3_PREFIX*",
+                "arn:aws:s3:::$S3_BUCKET/logs/*"
+            ]
         }
     ]
 }
@@ -86,7 +89,7 @@ echo "📋 Syncing DataManager to Lambda package..."
 # Copy to source dir first so it's included in zip later if needed, 
 # OR copy directly to build package. 
 # Better strategy: Copy to source dir (gitignored) so structure is valid locally too.
-cp utils/data_manager.py aws_lambda/data_ingestion/data_manager.py
+# cp utils/data_manager.py aws_lambda/data_ingestion/data_manager.py <--- REMOVED
 echo "✅ DataManager synced"
 
 # Define local path for mounting
@@ -101,7 +104,7 @@ docker run --platform linux/amd64 --rm -v "$LOCAL_PATH":/var/task public.ecr.aws
 # Copy function code (after build to avoid it being overwritten or needing mount)
 cp aws_lambda/data_ingestion/lambda_function_ingest.py build_package/
 # Copy DataManager into build package
-cp aws_lambda/data_ingestion/data_manager.py build_package/
+cp utils/data_manager.py build_package/
 
 # Zip
 cd build_package
@@ -125,6 +128,7 @@ if aws lambda get-function --function-name $FUNCTION_NAME >/dev/null 2>&1; then
     echo "Updating configuration..."
     aws lambda update-function-configuration --function-name $FUNCTION_NAME \
         --runtime python3.11 \
+        --handler lambda_function_ingest.lambda_handler \
         --environment "Variables={S3_BUCKET=$S3_BUCKET,S3_PREFIX=$S3_PREFIX}"
 else
     echo "Creating function..."

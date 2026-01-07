@@ -27,6 +27,14 @@ except ImportError:
     from utils.data_manager import DataManager
 
 def lambda_handler(event, context):
+    # Setup Logging to file
+    log_file = "/tmp/ingest.log"
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    start_time = datetime.now()
+    
     try:
         logger.info(f"yfinance version: {yf.__version__}")
         
@@ -112,6 +120,24 @@ def lambda_handler(event, context):
             'statusCode': 500,
             'body': f"Error: {str(e)}"
         }
+    finally:
+        # Upload logs to S3
+        try:
+            # Flush handlers
+            for handler in logger.handlers:
+                handler.flush()
+                
+            if s3_bucket:
+                s3 = boto3.client('s3')
+                timestamp = start_time.strftime('%Y%m%d_%H%M%S')
+                s3_key = f"logs/ingest_{timestamp}.log"
+                
+                logger.info(f"Uploading logs to s3://{s3_bucket}/{s3_key}")
+                s3.upload_file(log_file, s3_bucket, s3_key)
+                
+        except Exception as log_e:
+            # Fallback print if S3 logging fails
+            print(f"Failed to upload logs to S3: {log_e}")
 
 if __name__ == "__main__":
     # Local Test

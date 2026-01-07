@@ -27,8 +27,6 @@ except:
     pass
 
 # Constants
-# Constants
-EXPERIMENT_NAME = "EURUSD_Experiments"
 EXPERIMENT_NAME = "EURUSD_Experiments"
 
 def eval_metrics(actual, pred):
@@ -194,6 +192,16 @@ def train_models():
         arima_model = auto_arima(train_series, seasonal=False, trend='c', trace=True, error_action='ignore', suppress_warnings=True)
         print(f"  Best Order: {arima_model.order}")
         
+        # Log Model immediately (Before updating with test data in rolling forecast)
+        # This ensures the registry contains the pure "Trained on Train" model.
+        feature_config = {
+            "features": ['Return_Unscaled'],
+            "target": target_col,
+            "model_type": "ARIMA"
+        }
+        mlflow.log_dict(feature_config, "feature_config.json")
+        mlflow.sklearn.log_model(arima_model, name="model")
+
         predictions = []
         # Rolling Forecast
         print("  Running Rolling Forecast for ARIMA...")
@@ -232,16 +240,8 @@ def train_models():
         mlflow.log_metric("mae", mae)
         mlflow.log_metric("directional_accuracy", da)
         # Verify if signature is needed/possible for ARIMA. Usually not critical for basic stats models unless serving.
-        # Log Feature Config
-        feature_config = {
-            "features": ['Return_Unscaled'],
-            "target": target_col,
-            "model_type": "ARIMA"
-        }
-        mlflow.log_dict(feature_config, "feature_config.json")
-
-        # mlflow.sklearn.log_model(arima_model, artifact_path="model")
-        mlflow.sklearn.log_model(arima_model, name="model")
+        mlflow.log_metric("directional_accuracy", da)
+        # Verify if signature is needed/possible for ARIMA. Usually not critical for basic stats models unless serving.
 
     # --- Model C: LSTM ---
     with mlflow.start_run(run_name="LSTM") as run:
