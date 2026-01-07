@@ -122,7 +122,14 @@ def home():
         # Predict
         m_type = feature_config.get('model_type', 'Unknown')
         if 'arima' in m_type.lower():
-            pred_val = model.predict(n_periods=1)[0]
+            # Robustly handle prediction output (Series vs Array)
+            p = model.predict(n_periods=1)
+            if hasattr(p, 'iloc'):
+                pred_val = p.iloc[0]
+            elif isinstance(p, (list, np.ndarray)) and len(p) > 0:
+                pred_val = p[0]
+            else:
+                pred_val = p # Fallback for scalar
         else:
             pred_val = model.predict(X)
         

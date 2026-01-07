@@ -2,14 +2,14 @@
     "run_id": "3a13c2d2ff5f4458abbca9de9e149df9",
     "model_type": "LinearRegression",
     "model_name": "EURUSD_LinearRegression",
-    "model_version": "16",
+    "model_version": "18",
     "model_alias": "champion",
     "model_uri": "models:/EURUSD_LinearRegression@champion",
     "metrics": {
         "rmse": 0.0030552942375883766
     },
     "baseline_metrics": {
-        "rmse": 0.007058804702254555,
-        "directional_accuracy": 0.5059760956175299
+        "rmse": 0.007041505728988825,
+        "directional_accuracy": 0.5079365079365079
     }
 }

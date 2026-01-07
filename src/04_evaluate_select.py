@@ -69,11 +69,12 @@ def evaluate_and_select():
         print("Error: Experiment not found. Run training script first.")
         return
 
-    # 3. Find Best Run Per Model Type
-    print("Querying MLflow runs...")
+    # 3. Find LATEST Run Per Model Type (Focus on what we just trained)
+    print("Querying MLflow runs (Latest first)...")
     runs = client.search_runs(
         experiment_ids=[experiment.experiment_id],
-        order_by=["metrics.rmse ASC"]
+        # order_by=["metrics.rmse ASC"]
+        order_by=["attribute.start_time DESC"]
     )
     
     if not runs:

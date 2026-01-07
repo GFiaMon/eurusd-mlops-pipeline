@@ -190,6 +190,7 @@ def train_models():
         # Force 'c' (constant/intercept) to avoid (0,0,0) no-intercept model which yields DA=0
         # This ensures the model predicts at least the mean return (Drift) rather than pure 0.
         arima_model = auto_arima(train_series, seasonal=False, trend='c', trace=True, error_action='ignore', suppress_warnings=True)
+
         print(f"  Best Order: {arima_model.order}")
         
         # Log Model immediately (Before updating with test data in rolling forecast)
