@@ -226,8 +226,8 @@
     <div class="navbar">
         <div class="nav-brand">EUR/USD Predictor</div>
         <div class="nav-links">
-            <a href="/" class="active">Home</a>
-            <a href="/history">Historical Analysis</a>
+            <a href="/?model={{ selected_model }}" class="active">Home</a>
+            <a href="/history?model={{ selected_model }}">Historical Analysis</a>
         </div>
     </div>
 
@@ -236,7 +236,8 @@
         <div class="model-selector">
             <label for="model-select"><b>Switch Model:</b> </label>
             <select id="model-select" onchange="changeModel(this.value)">
-                <option value="best" {% if selected_model=='best' %}selected{% endif %}>🏆 Champion Model (Linear Reg)
+                <option value="linear" {% if selected_model=='best' or selected_model=='linear' %}selected{% endif %}>🏆
+                    Champion Model (Linear Reg)
                 </option>
                 <option value="lstm" {% if selected_model=='lstm' %}selected{% endif %}>🧠 LSTM (Deep Learning)</option>
                 <option value="arima" {% if selected_model=='arima' %}selected{% endif %}>📈 ARIMA (Statistical)

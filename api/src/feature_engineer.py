@@ -86,24 +86,29 @@ class FeatureEngineer:
         return X, current_price
 
     def preprocess_history(self, df, lookback=60):
-        """Batch preprocess for history page"""
-        X, price = self.preprocess(df) # We reuse the main logic
-        # For history we need the full time series
-        # To keep it simple and consistent:
+        """Batch preprocess for history page - returns FULL dataset features"""
+        # 1. Generate all base features on the full dataframe
         data = df.copy()
+        
+        # Ensure consistent naming
+        name_map = {c: c.capitalize() for c in data.columns if c.lower() in ['open', 'high', 'low', 'close']}
+        data = data.rename(columns=name_map)
+        
         data['Return'] = data['Close'].pct_change()
         for ma in [5, 10, 20, 50]: data[f'MA_{ma}'] = data['Close'].rolling(window=ma).mean()
         for d in [5, 20]: data[f'Return_{d}d'] = data['Close'].pct_change(periods=d)
         for lag in [1, 2, 3, 5]: data[f'Lag_{lag}'] = data['Return'].shift(lag)
+        
+        # Drop NaNs from feature gen
         data = data.dropna()
         
-        if len(data) > lookback:
-            data = data.iloc[-lookback:]
-            
+        # Ensure model features exist
         for col in self.feature_cols:
             if col not in data.columns: data[col] = 0
             
         X_df = data[self.feature_cols]
+        
+        # Scale
         if self.scaler:
             try:
                 if hasattr(self.scaler, 'n_features_in_') and self.scaler.n_features_in_ == len(self.feature_cols):

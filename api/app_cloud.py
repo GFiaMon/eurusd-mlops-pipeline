@@ -178,26 +178,117 @@ def history():
     if not load_success or df_data is None: return render_template('index.html', error="Not ready.")
     try:
         lookback = 60
-        # Check if we have enough data for lookback + window
+        # Check if we have enough data
         if len(df_data) < lookback + 10:
              return f"Not enough data history. Has {len(df_data)} rows.", 400
 
-        X_hist, y_actual_returns, prices, dates = fe.preprocess_history(df_data, lookback=lookback)
+        # Get FULL history features (now returns full DF)
+        X_full, y_full_returns, prices_full, dates_full = fe.preprocess_history(df_data, lookback=lookback)
+        
+        # Define the target range (last 'lookback' days)
+        # Note: X_full aligns with y_full_returns and prices_full
+        total_len = len(X_full)
+        start_idx = total_len - lookback
+        
+        # Target slices for metrics
+        y_actual_returns = y_full_returns.iloc[-lookback:]
+        prices = prices_full.iloc[-lookback:]
+        dates = dates_full[-lookback:]
         
         m_type = feature_config.get('model_type', 'Unknown')
-        
-        # Performance comparison: Linear Regression can do batch 2D prediction. 
-        # LSTM/ARIMA require sliding windows or stateful steps, which we skip for the history graph for now.
-        if 'linear' in m_type.lower():
+        y_pred = []
+
+        if 'lstm' in m_type.lower():
+            time_steps = feature_config.get('time_steps', 60)
+            # Sliding window prediction on the last 'lookback' days
+            # We need at least 'time_steps' of history to make a prediction
+            preds = []
+            
+            # For each day in the target window, construct a sequence and predict
+            for idx in range(lookback):
+                # Absolute position in X_full
+                abs_pos = start_idx + idx
+                
+                # Check if we have enough history (need 'time_steps' rows before abs_pos)
+                if abs_pos < time_steps:
+                    preds.append(0.0)  # Not enough history
+                else:
+                    # Window: [abs_pos - time_steps : abs_pos]
+                    # This gives us the 60 days BEFORE the target day
+                    window = X_full.iloc[abs_pos - time_steps:abs_pos].values
+                    window = window.reshape((1, time_steps, window.shape[1]))
+                    try:
+                        p = model.predict(window)  # No verbose parameter for pyfunc models
+                        if isinstance(p, (list, np.ndarray)): 
+                            p = p.flatten()[0]
+                        preds.append(float(p))
+                    except Exception as e:
+                        print(f"LSTM prediction error at idx {idx}: {e}")
+                        preds.append(0.0)
+            
+            y_pred = np.array(preds)
+
+        elif 'arima' in m_type.lower():
+            # ARIMA: Try predict_in_sample for the specific historical window
             try:
-                y_pred = model.predict(X_hist)
+                n_train = model.nobs_
+                # We want the LAST 'lookback' points from the training history
+                # start index (inclusive)
+                start_p = max(0, n_train - lookback)
+                # end index (inclusive)
+                end_p = n_train - 1
+                
+                preds = model.predict_in_sample(start=start_p, end=end_p)
+                
+                # Ensure preds is flat numpy array
+                if hasattr(preds, 'values'): preds = preds.values
+                preds = np.array(preds).flatten()
+                
+                # Align lengths
+                if len(preds) < lookback:
+                    preds = np.concatenate([np.zeros(lookback-len(preds)), preds])
+                elif len(preds) > lookback:
+                    preds = preds[-lookback:]
+                y_pred = preds
+                
+            except Exception as e:
+                print(f"ARIMA History Error: {e}")
+                y_pred = np.zeros(lookback)
+
+        else:
+            # Linear / standard sklearn
+            # slicing X for the target range
+            X_target = X_full.iloc[start_idx:]
+            try:
+                y_pred = model.predict(X_target)
+                if hasattr(y_pred, 'values'): y_pred = y_pred.values
                 y_pred = np.array(y_pred).flatten()
             except:
-                y_pred = np.zeros(len(X_hist))
-        else:
-            # For LSTM/ARIMA, show zeros on the graph to avoid shape errors
-            y_pred = np.zeros(len(X_hist))
+                y_pred = np.zeros(len(X_target))
         
+        # Final safety normalization
+        if len(y_pred) != lookback:
+             # Force length match if strictly needed (though y_actual is also defined by lookback)
+             if len(y_pred) > lookback: y_pred = y_pred[-lookback:]
+             else: y_pred = np.concatenate([np.zeros(lookback-len(y_pred)), y_pred])
+             
+        # Double check against actuals length (should be same as lookback)
+        if len(y_pred) != len(y_actual_returns):
+            min_l = min(len(y_pred), len(y_actual_returns))
+            y_pred = y_pred[-min_l:] # Take prediction from end
+            y_actual_returns = y_actual_returns.iloc[-min_l:]
+            prices = prices.iloc[-min_l:]
+            dates = dates[-min_l:]
+        
+        # Formatting metrics
+        if len(y_pred) != len(y_actual_returns):
+            # Safety checks for shape mismatch
+            min_l = min(len(y_pred), len(y_actual_returns))
+            y_pred = y_pred[:min_l]
+            y_actual_returns = y_actual_returns.iloc[:min_l]
+            prices = prices.iloc[:min_l]
+            dates = dates[:min_l]
+
         mae = np.mean(np.abs(y_actual_returns.values - y_pred))
         mae_price = np.mean(np.abs(prices.values - (prices.shift(1)*(1+y_pred)).fillna(prices)))
         mae_pips = mae_price * 10000
