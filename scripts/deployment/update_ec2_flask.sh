@@ -9,7 +9,7 @@
 # Configuration
 HOST="eurusd-inference-app"
 REMOTE_DIR="~/eurusd-app"
-MLFLOW_URI="http://13.217.216.242:5000"
+MLFLOW_URI="http://34.229.131.42:5000"
 
 # Parse arguments
 RESTART_ONLY=false

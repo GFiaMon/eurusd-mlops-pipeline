@@ -28,7 +28,7 @@ graph LR
 
 ### 1.1 S3 Bucket (Artifact Store)
 1.  Go to **S3** Console.
-2.  Create a bucket (e.g., `mlflow-artifacts-eurusd-capstone`).
+2.  Create a bucket (e.g., `eurusd-ml-models`).
 3.  Block all public access.
 
 ### 1.2 RDS Instance (Backend Store)

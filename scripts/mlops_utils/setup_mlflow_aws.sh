@@ -11,7 +11,7 @@ DB_USERNAME="mlflow_user"
 DB_PASSWORD="mlflow_password_123" 
 EC2_INSTANCE_TYPE="t3.micro" # Verified Free Tier eligible
 RDS_INSTANCE_CLASS="db.t3.micro"
-# AMI_ID="ami-0c7217cdde317cfec" # OLD (Ubuntu)
+MLFLOW_VERSION="3.8.1" # Updated to latest version
 # Dynamic lookup for latest Amazon Linux 2023 (AL2023) x86_64 AMI
 AMI_ID=$(aws ec2 describe-images \
     --owners amazon \
@@ -20,7 +20,7 @@ AMI_ID=$(aws ec2 describe-images \
     --output text)
 KEY_NAME="eurusd-keypair"
 
-echo "🚀 Starting AWS Infrastructure Setup for MLflow (Robust Version)..."
+echo "🚀 Starting AWS Infrastructure Setup for MLflow ${MLFLOW_VERSION}..."
 
 # 0. Check for AWS CLI
 if ! command -v aws &> /dev/null; then
@@ -150,7 +150,7 @@ fi
 
 # 4. Create Key Pair
 if ! aws ec2 describe-key-pairs --key-names "$KEY_NAME" &> /dev/null; then
-    echo "   � Creating Key Pair: $KEY_NAME"
+    echo "   🔑 Creating Key Pair: $KEY_NAME"
     aws ec2 create-key-pair --key-name "$KEY_NAME" --query "KeyMaterial" --output text > "${KEY_NAME}.pem"
     chmod 400 "${KEY_NAME}.pem"
     echo "   ✅ Key Pair saved to ${KEY_NAME}.pem"
@@ -158,21 +158,25 @@ else
     echo "   ℹ️  Key Pair $KEY_NAME already exists."
 fi
 
-# 5. Launch EC2 (Best Practices: Venv + IMDSv2)
-echo "�💻 Launching EC2 Instance (2025 Best Practices)..."
+# 5. Launch EC2 with Python 3.11 and MLflow 3.8.1
+echo "💻 Launching EC2 Instance (Python 3.11 + MLflow ${MLFLOW_VERSION})..."
 
 USER_DATA="#!/bin/bash
-# Update and install dependencies
+# Update and install Python 3.11 (required for MLflow 3.8.1)
 dnf update -y
-dnf install -y python3-pip python3-devel postgresql15-devel gcc
+dnf install -y python3.11 python3.11-pip python3.11-devel postgresql15-devel gcc
 
-# Create a virtual environment for MLflow
-python3 -m venv /opt/mlflow_venv
+# Create virtual environment with Python 3.11
+python3.11 -m venv /opt/mlflow_venv
 source /opt/mlflow_venv/bin/activate
 pip install --upgrade pip
-pip install mlflow psycopg2-binary boto3
+pip install mlflow==${MLFLOW_VERSION} psycopg2-binary boto3 prometheus-flask-exporter
 
-# Create Systemd Service
+# Create metrics directory for prometheus
+mkdir -p /tmp/mlflow-metrics
+chown root:root /tmp/mlflow-metrics
+
+# Create Systemd Service with --allowed-hosts flag
 cat <<EOF > /etc/systemd/system/mlflow.service
 [Unit]
 Description=MLflow Tracking Server
@@ -181,11 +185,14 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/root
-ExecStart=/opt/mlflow_venv/bin/mlflow server \\
-    --backend-store-uri postgresql://$DB_USERNAME:$DB_PASSWORD@$DB_ENDPOINT:5432/$DB_NAME \\
-    --default-artifact-root s3://$S3_BUCKET/mlflow-artifacts \\
-    --host 0.0.0.0 \\
-    --port 5000
+Environment=\"prometheus_multiproc_dir=/tmp/mlflow-metrics\"
+ExecStart=/opt/mlflow_venv/bin/mlflow server \\\\
+    --backend-store-uri postgresql://$DB_USERNAME:$DB_PASSWORD@$DB_ENDPOINT:5432/$DB_NAME \\\\
+    --default-artifact-root s3://$S3_BUCKET/mlflow-artifacts \\\\
+    --host 0.0.0.0 \\\\
+    --port 5000 \\\\
+    --serve-artifacts \\\\
+    --allowed-hosts \"*\"
 Restart=always
 
 [Install]
@@ -215,16 +222,25 @@ echo "   ⏳ Waiting for instance to be running (to get IP)..."
 aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 
 PUBLIC_DNS=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].PublicDnsName" --output text)
+PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
 
 echo ""
 echo "🎉 Deployment Complete!"
 echo "---------------------------------------------------"
-echo "🌍 MLflow Server URL: http://$PUBLIC_DNS:5000"
+echo "🌍 MLflow Server URL: http://$PUBLIC_IP:5000"
+echo "📝 Public DNS: $PUBLIC_DNS"
+echo "🔧 MLflow Version: ${MLFLOW_VERSION}"
+echo "🐍 Python Version: 3.11"
 echo "---------------------------------------------------"
 echo "📋 Next Steps:"
-echo "1. Create a .env file in your project root:"
-echo "   echo \"MLFLOW_TRACKING_URI=http://$PUBLIC_DNS:5000\" > .env"
-echo "2. Install python-dotenv:"
-echo "   pip install python-dotenv"
-echo "3. Run your training script:"
+echo "1. Update your .env file:"
+echo "   echo \"MLFLOW_TRACKING_URI=http://$PUBLIC_IP:5000\" > .env"
+echo "2. Update requirements.txt to match:"
+echo "   mlflow==${MLFLOW_VERSION}"
+echo "3. Install/upgrade locally:"
+echo "   pip install mlflow==${MLFLOW_VERSION} python-dotenv boto3"
+echo "4. Run your training script:"
 echo "   python src/03_train_models.py"
+echo ""
+echo "💡 Note: The --allowed-hosts flag is set to accept all hosts."
+echo "   For production, consider using an Elastic IP and restricting this."
