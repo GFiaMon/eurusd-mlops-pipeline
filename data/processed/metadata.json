@@ -1,4 +1,31 @@
 {
-  "version": "1.0",
-  "source_rows": 1257
+  "version": "v2_fixed_leakage",
+  "train_start": "2021-03-05",
+  "train_end": "2024-12-31",
+  "test_start": "2025-01-02",
+  "test_end": "2026-01-05",
+  "features_scaled": [
+    "Close",
+    "High",
+    "Low",
+    "Open",
+    "Return",
+    "MA_50",
+    "Range_Pct",
+    "ATR_14",
+    "Volatility_5d",
+    "Volatility_20d",
+    "Vol_Ratio",
+    "Return_20d",
+    "Lag_1",
+    "Lag_2",
+    "Lag_3",
+    "Lag_5"
+  ],
+  "features_unscaled": [
+    "Target",
+    "Return_Unscaled",
+    "Close_Unscaled"
+  ],
+  "notes": "Fixed data leakage with shift(1), added range/RSI/vol features"
 }

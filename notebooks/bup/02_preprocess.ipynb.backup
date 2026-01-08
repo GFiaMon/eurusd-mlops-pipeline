@@ -1,0 +1,380 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "bcb8577d",
+   "metadata": {},
+   "source": [
+    "# 02. Preprocessing & Feature Engineering\n",
+    "\n",
+    "Generates features (MA, RSI, Lags) and prepares train/test splits."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d504ab4b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import sys\n",
+    "import os\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "from sklearn.preprocessing import MinMaxScaler\n",
+    "\n",
+    "sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))\n",
+    "root_path = os.path.abspath(os.path.join(os.getcwd(), '..'))\n",
+    "from utils.data_manager import DataManager\n",
+    "\n",
+    "%matplotlib inline\n",
+    "sns.set_style(\"darkgrid\")\n",
+    "plt.rcParams['figure.figsize'] = (15, 7)\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "bcc76d73",
+   "metadata": {},
+   "source": [
+    "## 1. Load Raw Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "cc6544cf",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "dm_raw = DataManager(data_type='raw', local_dir=os.path.join(root_path, 'data/raw'))\n",
+    "df = dm_raw.get_latest_data(force_refresh=False)\n",
+    "if not df.empty:\n",
+    "    # Tuple-String Cleanup\n",
+    "    new_cols = []\n",
+    "    for c in df.columns:\n",
+    "        c = str(c)\n",
+    "        if (c.startswith(\"('\") or c.startswith('(\"')) and \",\" in c:\n",
+    "            clean = c.strip(\"()\").replace(\"'\", \"\").replace('\"', \"\").split(\",\")[0].strip()\n",
+    "            new_cols.append(clean)\n",
+    "        else:\n",
+    "            new_cols.append(c)\n",
+    "    df.columns = new_cols\n",
+    "    \n",
+    "    # Deduplicate\n",
+    "    df = df.loc[:, ~df.columns.duplicated()]\n",
+    "print(f\"Loaded {len(df)} rows.\")\n",
+    "\n",
+    "# Clean tuples/volume\n",
+    "tuple_cols = [c for c in df.columns if isinstance(c, tuple) or (isinstance(c, str) and c.startswith('('))]\n",
+    "if tuple_cols: df = df.drop(columns=tuple_cols)\n",
+    "if 'Volume' in df.columns: df = df.drop(columns=['Volume'])\n",
+    "\n",
+    "# Ensure numeric Close\n",
+    "df['Close'] = pd.to_numeric(df['Close'], errors='coerce')\n",
+    "df = df.dropna(subset=['Close'])\n",
+    "\n",
+    "# Filter out zero or negative prices to avoid infinity in pct_change\n",
+    "df = df[df['Close'] > 0]\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4e1ed4e7",
+   "metadata": {},
+   "source": [
+    "## 2. Feature Engineering"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "caa5fd79",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Returns\n",
+    "df['Return'] = df['Close'].pct_change()\n",
+    "\n",
+    "# 2. Moving Averages\n",
+    "for ma in [5, 10, 20, 50]:\n",
+    "    df[f'MA_{ma}'] = df['Close'].rolling(window=ma).mean().shift(1)\n",
+    "\n",
+    "# 3. RSI (Relative Strength Index)\n",
+    "def calculate_rsi(data, window=14):\n",
+    "    delta = data.diff()\n",
+    "    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()\n",
+    "    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()\n",
+    "    rs = gain / loss\n",
+    "    return 100 - (100 / (1 + rs))\n",
+    "\n",
+    "df['RSI'] = calculate_rsi(df['Close'])\n",
+    "\n",
+    "# 4. Lagged Returns\n",
+    "for r in [5, 20]:\n",
+    "    df[f'Return_{r}d'] = df['Close'].pct_change(periods=r)\n",
+    "\n",
+    "for lag in [1, 2, 3, 5]:\n",
+    "    df[f'Lag_{lag}'] = df['Return'].shift(lag)\n",
+    "\n",
+    "df = df.dropna()\n",
+    "\n",
+    "# Preserve Unscaled Return for ARIMA\n",
+    "df['Return_Unscaled'] = df['Return']\n",
+    "# Preserve Unscaled Close for Reconstruction/Horizon\n",
+    "df['Close_Unscaled'] = df['Close']\n",
+    "\n",
+    "\n",
+    "print(f\"Rows after Feature Engineering: {len(df)}\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "8a1dcc00",
+   "metadata": {},
+   "source": [
+    "## 3. Feature Visualization"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "392e2663",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Plot Moving Averages\n",
+    "plt.figure(figsize=(15, 6))\n",
+    "plt.plot(df.index[-200:], df['Close'].iloc[-200:], label='Close', color='black', alpha=0.5)\n",
+    "plt.plot(df.index[-200:], df['MA_10'].iloc[-200:], label='MA 10')\n",
+    "plt.plot(df.index[-200:], df['MA_50'].iloc[-200:], label='MA 50')\n",
+    "plt.title(\"Close Price vs Moving Averages (Last 200 Days)\")\n",
+    "plt.legend()\n",
+    "plt.show()\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "26a6116c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Plot RSI\n",
+    "plt.figure(figsize=(15, 4))\n",
+    "plt.plot(df.index[-200:], df['RSI'].iloc[-200:], color='purple', label='RSI')\n",
+    "plt.axhline(70, linestyle='--', color='red', alpha=0.5)\n",
+    "plt.axhline(30, linestyle='--', color='green', alpha=0.5)\n",
+    "plt.title(\"RSI (Last 200 Days) - Overbought > 70, Oversold < 30\")\n",
+    "plt.legend()\n",
+    "plt.show()\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "be4aedf6",
+   "metadata": {},
+   "source": [
+    "### Correlation Heatmap (Original)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "b76f5875",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plt.figure(figsize=(12, 10))\n",
+    "# Create Target for correlation check\n",
+    "df['Target_NextReturn'] = df['Return'].shift(-1)\n",
+    "temp_df = df.dropna().copy()\n",
+    "feature_cols_all = [c for c in temp_df.columns if c not in ['Target_NextReturn']]\n",
+    "\n",
+    "# Heatmap\n",
+    "corr_all = temp_df[feature_cols_all + ['Target_NextReturn']].corr()\n",
+    "sns.heatmap(corr_all, annot=True, cmap='coolwarm', fmt=\".2f\", vmin=-1, vmax=1)\n",
+    "plt.title(\"Feature Correlation Heatmap (Original)\")\n",
+    "plt.show()\n",
+    "\n",
+    "# Clean up temp target\n",
+    "df = df.drop(columns=['Target_NextReturn'])\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "d3141161",
+   "metadata": {},
+   "source": [
+    "### Correlation Reduction (Drop > 0.95)\n",
+    "\n",
+    "We identify highly correlated features and drop the redundant ones (keeping the one best correlated with Target)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "53b64c9e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Create Target temporarily\n",
+    "df['Target_NextReturn'] = df['Return'].shift(-1)\n",
+    "temp_df = df.dropna().copy()\n",
+    "\n",
+    "# 2. Exclude essential columns from dropping\n",
+    "# We MUST keep 'Return' because it's used to create Target later.\n",
+    "# keep_cols = ['Open', 'High', 'Low', 'Close', 'Return', 'Return_Unscaled', 'Target', 'Target_NextReturn']\n",
+    "keep_cols = ['Close', 'Return', 'Return_Unscaled', 'Target', 'Target_NextReturn']\n",
+    "feature_cols = [c for c in temp_df.columns if c not in keep_cols]\n",
+    "\n",
+    "# 3. Calculate Correlation\n",
+    "corr_matrix = temp_df[feature_cols].corr().abs()\n",
+    "upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))\n",
+    "\n",
+    "to_drop = []\n",
+    "threshold = 0.95\n",
+    "drop_records = []\n",
+    "\n",
+    "print(f\"🔍 Checking correlations > {threshold}...\")\n",
+    "\n",
+    "target_corr = temp_df[feature_cols + ['Target_NextReturn']].corr()['Target_NextReturn'].abs()\n",
+    "\n",
+    "for column in upper.columns:\n",
+    "    if any(upper[column] > threshold):\n",
+    "        correlated_feats = upper.index[upper[column] > threshold].tolist()\n",
+    "        \n",
+    "        current_score = target_corr.get(column, 0)\n",
+    "        \n",
+    "        for feat in correlated_feats:\n",
+    "            peer_score = target_corr.get(feat, 0)\n",
+    "            \n",
+    "            if feat in to_drop: continue # Already dropped\n",
+    "            \n",
+    "            if current_score < peer_score:\n",
+    "                if column not in to_drop:\n",
+    "                    to_drop.append(column)\n",
+    "                    drop_records.append({'Drop': column, 'Keep': feat, 'Corr': upper.loc[feat, column], 'Score_Drop': current_score, 'Score_Keep': peer_score})\n",
+    "            else:\n",
+    "                if feat not in to_drop:\n",
+    "                    to_drop.append(feat)\n",
+    "                    drop_records.append({'Drop': feat, 'Keep': column, 'Corr': upper.loc[feat, column], 'Score_Drop': peer_score, 'Score_Keep': current_score})\n",
+    "\n",
+    "# Show Summary Table\n",
+    "if drop_records:\n",
+    "    drop_df = pd.DataFrame(drop_records).sort_values('Corr', ascending=False)\n",
+    "    print(\"🔻 Feature Reduction Summary:\")\n",
+    "    display(drop_df)\n",
+    "else:\n",
+    "    print(\"✅ No highly correlated features found to drop.\")\n",
+    "\n",
+    "# Deduplicate list\n",
+    "to_drop = list(set(to_drop))\n",
+    "df = df.drop(columns=to_drop)\n",
+    "df = df.drop(columns=['Target_NextReturn']) # Cleanup\n",
+    "\n",
+    "print(f\"✅ Final Features: {[c for c in df.columns if c not in ['Open','High','Low','Close','Return_Unscaled','Target']]}\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "07acfc70",
+   "metadata": {},
+   "source": [
+    "### Correlation Heatmap (Cleaned)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "40e78966",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plt.figure(figsize=(10, 8))\n",
+    "# Re-calc Target for Viz\n",
+    "df['Target_NextReturn'] = df['Return'].shift(-1)\n",
+    "# features now are whatever is left in df (excluding basics)\n",
+    "final_cols = [c for c in df.columns if c not in ['Target_NextReturn']]\n",
+    "\n",
+    "corr_final = df[final_cols + ['Target_NextReturn']].corr()\n",
+    "sns.heatmap(corr_final, annot=True, cmap='coolwarm', fmt=\".2f\", vmin=-1, vmax=1)\n",
+    "plt.title(\"Feature Correlation Heatmap (Cleaned)\")\n",
+    "plt.show()\n",
+    "\n",
+    "df = df.drop(columns=['Target_NextReturn'])\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f4cb9d91",
+   "metadata": {},
+   "source": [
+    "## 4. Train/Test Split & Save"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a45568b7",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Target\n",
+    "df['Target'] = df['Return'].shift(-1)\n",
+    "df = df.dropna()\n",
+    "\n",
+    "train_size = int(len(df) * 0.8)\n",
+    "train_df = df.iloc[:train_size].copy()\n",
+    "test_df = df.iloc[train_size:].copy()\n",
+    "\n",
+    "print(f\"Train Size: {len(train_df)}\")\n",
+    "print(f\"Test Size: {len(test_df)}\")\n",
+    "\n",
+    "# Scaling\n",
+    "scaler = MinMaxScaler()\n",
+    "cols_to_scale = [c for c in df.columns if c not in ['Target', 'Return_Unscaled']] # Exclude Unscaled Return\n",
+    "train_df[cols_to_scale] = scaler.fit_transform(train_df[cols_to_scale])\n",
+    "test_df[cols_to_scale] = scaler.transform(test_df[cols_to_scale])\n",
+    "\n",
+    "# Save\n",
+    "dm_processed = DataManager(data_type='processed', local_dir=os.path.join(root_path, 'data/processed'))\n",
+    "dm_processed.save_processed(train_df, test_df, scaler, metadata={'version': 'notebook'})\n",
+    "print(\"✅ Saved processed data.\")\n",
+    "\n",
+    "# Visualize Split\n",
+    "plt.figure(figsize=(15, 6))\n",
+    "plt.plot(train_df.index, train_df['Close'], label='Train (Scaled)') # Note: It's scaled now, visualization might be weird for Price\n",
+    "plt.plot(test_df.index, test_df['Close'], label='Test (Scaled)')\n",
+    "plt.axvline(train_df.index.max(), color='red', linestyle='--', label='Split')\n",
+    "plt.title(\"Train / Test Split (Scaled Close Price)\")\n",
+    "plt.legend()\n",
+    "plt.show()\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "venv_eurusd",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.14"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
