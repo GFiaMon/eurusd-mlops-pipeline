@@ -6,6 +6,8 @@ A production-grade machine learning pipeline to predict EUR/USD forex rates. Thi
 
 ## 📋 High-Level Architecture
 
+![System Architecture](img/AWS_MLops_Pipeline_Architecture.png)
+
 The system operates on a **Hybrid Cloud/Local** architecture designed for cost-efficiency and scalability. It uses a **Cloud-First, Local-Mirror** data strategy powered by the custom `DataManager`.
 
 ```mermaid
